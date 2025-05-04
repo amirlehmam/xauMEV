@@ -18,6 +18,8 @@ This system is tailored for professional arbitrageurs seeking sub-second latency
 
 ## 🧠 Architecture Layers
 
+![System Architecture](./docs/architecture_diagram.png)
+
 ### 🟤 Layer 1 – Solidity Smart Contract
 - Executes atomic flash loan arbitrage in a single transaction
 - Compatible with Aave V3 flash loans
@@ -193,6 +195,11 @@ Use mock tokens to simulate XAUT/USDT on testnet and deploy contracts.
 
 ---
 
+## 📅 Timeline
+![Gantt Chart](./docs/gantt_chart.png)
+
+---
+
 ## 🗺️ Roadmap Highlights
 
 - 🔄 Add Flashbots TX bundling (Ethereum mainnet)
@@ -218,8 +225,8 @@ MIT — for commercial and institutional use.
 ---
 
 ## 👨‍💻 Maintainer
-**GannGone** — flash loan arbitrage developer  
-Contact: `@yourTelegram` | `your@email`
+**Amir Lehmam** — flash loan arbitrage developer  
+Contact: `@fluctue` | `amirlehmam.pro@gmail.com`
 
 ---
 
