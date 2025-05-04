@@ -4,26 +4,21 @@ require("@nomiclabs/hardhat-ethers");
 require("@nomiclabs/hardhat-waffle");
 require("@nomiclabs/hardhat-etherscan");
 
-const {
-  ANKR_SEPOLIA,        // <─ free Sepolia RPC (ankr, alchemy, infura…)
-  PRIVATE_KEY,
-  ETHERSCAN_API_KEY
-} = process.env;
-
-const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
+const { INFURA_SEPOLIA, PRIVATE_KEY, ETHERSCAN_API_KEY } = process.env;
 
 module.exports = {
-  defaultNetwork: "hardhat",
+  defaultNetwork: "sepolia",
   solidity: {
     version: "0.8.17",
-    settings: { optimizer: { enabled: true, runs: 500 } }
+    settings: { 
+      viaIR: true,
+      optimizer: { enabled: true, runs: 500 } }
   },
   networks: {
-    hardhat: {},
     sepolia: {
-      url: ANKR_SEPOLIA,
-      chainId: 11155111,
-      accounts
+      url: INFURA_SEPOLIA,              // Infura  or Ankr RPC
+      chainId: 11155111,                // Sepolia chain‑ID :contentReference[oaicite:0]{index=0}
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : []
     }
   },
   etherscan: { apiKey: ETHERSCAN_API_KEY || "" },
