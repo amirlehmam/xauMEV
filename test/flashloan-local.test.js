@@ -32,8 +32,8 @@ describe("Flash‑loan smoke on Hardhat (mocks)", () => {
       priceFeed.address
     );
 
-    /* ── 👉  Mint 1 XAUT to the arbitrage contract so xautBal>0  */
-    await xaut.mint(flash.address, ethers.utils.parseUnits("5", 6));
+    /* ── 👉  Mint 5000 XAUT to the arbitrage contract so xautBal>0  */
+    await xaut.mint(flash.address, ethers.utils.parseUnits("5000", 6));
   });
 
   it("borrows 5 000 mUSDT and returns it", async () => {
