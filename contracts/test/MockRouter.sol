@@ -1,7 +1,7 @@
 // SPDX‑License‑Identifier: UNLICENSED
 pragma solidity ^0.8.17;
 
-/// @dev Uniswap‑V2‑style router stub — returns amountIn for every hop
+/// @dev Uniswap‑V2‑style stub — returns amountIn for every hop
 contract MockRouter {
     function getAmountsOut(uint amountIn, address[] calldata path)
         external pure returns (uint[] memory amounts)

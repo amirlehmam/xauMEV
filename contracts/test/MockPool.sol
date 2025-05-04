@@ -13,7 +13,7 @@ interface IFlashLoanSimpleReceiver {
     ) external returns (bool);
 }
 
-/// @dev  25‑line flash‑loan stub for local tests
+/// @dev 25‑line flash‑loan stub for local tests
 contract MockPool {
     uint16  public constant REFERRAL_CODE = 0;
     uint256 public constant FEE_BPS       = 9;   // 0.09 %
@@ -33,10 +33,10 @@ contract MockPool {
         // fee
         uint256 fee = (amount * FEE_BPS) / 10_000;
 
-        // callback
+        // callback — pass msg.sender (the FlashLoanArbitrage contract) as initiator
         require(
             IFlashLoanSimpleReceiver(receiver).executeOperation(
-                asset, amount, fee, address(this), params
+                asset, amount, fee, msg.sender, params   // msg.sender, **not** address(this)
             ),
             "callback failed"
         );
