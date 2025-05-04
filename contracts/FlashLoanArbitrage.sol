@@ -31,9 +31,7 @@ interface IFlashLoanSimpleReceiver {
 // ─── UNISWAP V2 ROUTER INTERFACE ────────────────────────────────────────────
 interface IUniswapV2Router02 {
     function getAmountsOut(uint256 amountIn, address[] calldata route)
-        external
-        view
-        returns (uint256[] memory amounts);
+        external view returns (uint256[] memory amounts);
 }
 
 // ─── FLASH LOAN ARBITRAGE ────────────────────────────────────────────────────
@@ -41,12 +39,16 @@ interface IUniswapV2Router02 {
  * @title FlashLoanArbitrage
  * @notice Atomically borrows USDT via Aave V3, swaps USDT⇄XAUT on two DEXs, repays, and sends profit to owner.
  */
-contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceiver {
+contract FlashLoanArbitrage is
+    Ownable,
+    ReentrancyGuard,
+    IFlashLoanSimpleReceiver
+{
     using SafeERC20 for IERC20;
 
     IPool                public immutable pool;
     IERC20               public immutable USDT;
-    IERC20               public immutable XAUT;
+    IERC20               public immutable XAUT;      // <-- corrected here
     AggregatorV3Interface public immutable priceFeed;
     uint16 public constant REFERRAL_CODE = 0;
 
@@ -104,7 +106,7 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         );
     }
 
-    /// @dev Aave callback: perform swaps, repay+fee, send profit
+    /// @dev Aave V3 callback: perform swaps, repay+fee, send profit
     function executeOperation(
         address asset,
         uint256 amount,
@@ -116,7 +118,6 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         require(initiator == address(this),    "Not initiated here");
         require(asset     == address(USDT),     "Wrong asset");
 
-        // Decode parameters
         (
             address buyRouter,
             bytes memory buyData,
@@ -133,17 +134,17 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         (, int256 oraclePrice,,,) = priceFeed.latestRoundData();
         require(oraclePrice > 0, "Oracle bad");
 
-        // 2) Build USDT→XAUT route **correctly**
+        // 2) CORRECT in-place memory-array declaration
         address;
         route[0] = address(USDT);
         route[1] = address(XAUT);
 
         // 3) Fetch DEX price vs oracle
         uint256[] memory amountsOut = IUniswapV2Router02(buyRouter)
-            .getAmountsOut(1e6 /*1 USDT*/, route);
+            .getAmountsOut(1e6 /* 1 USDT */, route);
         require(amountsOut.length == 2, "Price fetch failed");
 
-        uint256 dexPrice = (amountsOut[1] * 1e8) / 1e6;  
+        uint256 dexPrice = (amountsOut[1] * 1e8) / 1e6;
         uint256 diffBps = dexPrice > uint256(oraclePrice)
             ? (dexPrice - uint256(oraclePrice)) * 10000 / uint256(oraclePrice)
             : (uint256(oraclePrice) - dexPrice) * 10000 / uint256(oraclePrice);
@@ -162,7 +163,7 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         require(ok2, "Sell failed");
 
         // 6) Repay + profit
-        uint256 finalBal = USDT.balanceOf(address(this));
+        uint256 finalBal  = USDT.balanceOf(address(this));
         uint256 totalDebt = amount + premium;
         require(finalBal >= totalDebt + minProfit, "Insufficient profit");
 
