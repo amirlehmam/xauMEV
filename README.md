@@ -62,12 +62,14 @@ This system is tailored for professional arbitrageurs seeking sub-second latency
 ```
 project-root/
 ├── contracts/              # Solidity contracts
-├── rust_engine/            # Rust-based arb engine
-├── orchestrator/           # Python orchestrator
-├── ocaml_tooling/          # OCaml scripts for analytics & config
 ├── docker/                 # Dockerfiles, Prometheus, Compose setup
+├── docs/                   # Docs, images files
+├── ocaml_tooling /         # OCaml scripts for analytics & config
+├── orchestrator/           # Python orchestrator
+├── rust_engine             # Rust-based arb engine
 ├── scripts/                # Deployment / utility scripts
 ├── .env.example            # Sample environment file
+├── .gitignore              # Python gitignore template
 └── README.md               # This file
 ```
 
