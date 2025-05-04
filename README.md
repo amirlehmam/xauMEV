@@ -1,5 +1,5 @@
 
-# 🪙 XAUT/USDT Flash Loan Arbitrage Bot
+# 🪙 xauMEV Flash Loan Arbitrage Bot
 
 ## 🚀 Project Objective
 This is a next-gen, production-ready **Flash Loan Arbitrage System** focused solely on the **XAUT/USDT pair** across multiple blockchains and DEXs. Designed for institutional-grade trading, it integrates:
