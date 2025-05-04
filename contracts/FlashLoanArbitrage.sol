@@ -30,25 +30,24 @@ interface IFlashLoanSimpleReceiver {
 
 // ─── UNISWAP V2 ROUTER INTERFACE ────────────────────────────────────────────
 interface IUniswapV2Router02 {
-    function getAmountsOut(uint256 amountIn, address[] calldata path)
+    function getAmountsOut(uint256 amountIn, address[] calldata route)
         external
         view
         returns (uint256[] memory amounts);
 }
 
 // ─── FLASH LOAN ARBITRAGE ────────────────────────────────────────────────────
-contract FlashLoanArbitrage is
-    Ownable,
-    ReentrancyGuard,
-    IFlashLoanSimpleReceiver
-{
+/**
+ * @title FlashLoanArbitrage
+ * @notice Atomically borrows USDT via Aave V3, swaps USDT⇄XAUT on two DEXs, repays, and sends profit to owner.
+ */
+contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceiver {
     using SafeERC20 for IERC20;
 
     IPool                public immutable pool;
     IERC20               public immutable USDT;
     IERC20               public immutable XAUT;
     AggregatorV3Interface public immutable priceFeed;
-
     uint16 public constant REFERRAL_CODE = 0;
 
     event ArbitrageExecuted(
@@ -63,11 +62,13 @@ contract FlashLoanArbitrage is
         address _xaut,
         address _priceFeed
     ) {
-        require(_pool != address(0), "Pool zero");
-        require(_usdt != address(0), "USDT zero");
-        require(_xaut != address(0), "XAUT zero");
-        require(_priceFeed != address(0), "Feed zero");
-
+        require(
+            _pool      != address(0) &&
+            _usdt      != address(0) &&
+            _xaut      != address(0) &&
+            _priceFeed != address(0),
+            "Zero address"
+        );
         pool      = IPool(_pool);
         USDT      = IERC20(_usdt);
         XAUT      = IERC20(_xaut);
@@ -78,6 +79,7 @@ contract FlashLoanArbitrage is
         XAUT.safeApprove(_pool, type(uint256).max);
     }
 
+    /// @notice Owner-only entrypoint to start a flash-loan arbitrage
     function executeArbitrage(
         address buyRouter,
         bytes calldata buyData,
@@ -88,16 +90,11 @@ contract FlashLoanArbitrage is
         uint256 maxDevBps
     ) external onlyOwner nonReentrant {
         require(loanAmount > 0, "Loan zero");
-
         bytes memory params = abi.encode(
-            buyRouter,
-            buyData,
-            sellRouter,
-            sellData,
-            minProfit,
-            maxDevBps
+            buyRouter, buyData,
+            sellRouter, sellData,
+            minProfit, maxDevBps
         );
-
         pool.flashLoanSimple(
             address(this),
             address(USDT),
@@ -107,6 +104,7 @@ contract FlashLoanArbitrage is
         );
     }
 
+    /// @dev Aave callback: perform swaps, repay+fee, send profit
     function executeOperation(
         address asset,
         uint256 amount,
@@ -115,9 +113,10 @@ contract FlashLoanArbitrage is
         bytes calldata params
     ) external override returns (bool) {
         require(msg.sender == address(pool), "Caller not pool");
-        require(initiator == address(this), "Not initiated here");
-        require(asset == address(USDT), "Asset not USDT");
+        require(initiator == address(this),    "Not initiated here");
+        require(asset     == address(USDT),     "Wrong asset");
 
+        // Decode parameters
         (
             address buyRouter,
             bytes memory buyData,
@@ -130,37 +129,42 @@ contract FlashLoanArbitrage is
             (address, bytes, address, bytes, uint256, uint256)
         );
 
-        // ─── **HERE** is the ONLY declaration of `path` ─────────────────────────
-        address;
-        path[0] = address(USDT);
-        path[1] = address(XAUT);
-
-        uint256[] memory amountsOut = IUniswapV2Router02(buyRouter)
-            .getAmountsOut(1e6 /*1 USDT*/, path);
-        require(amountsOut.length == 2, "Price fetch failed");
-
+        // 1) Oracle sanity check
         (, int256 oraclePrice,,,) = priceFeed.latestRoundData();
         require(oraclePrice > 0, "Oracle bad");
 
-        uint256 dexPrice = (amountsOut[1] * 1e8) / 1e6;
+        // 2) Build USDT→XAUT route **correctly**
+        address;
+        route[0] = address(USDT);
+        route[1] = address(XAUT);
+
+        // 3) Fetch DEX price vs oracle
+        uint256[] memory amountsOut = IUniswapV2Router02(buyRouter)
+            .getAmountsOut(1e6 /*1 USDT*/, route);
+        require(amountsOut.length == 2, "Price fetch failed");
+
+        uint256 dexPrice = (amountsOut[1] * 1e8) / 1e6;  
         uint256 diffBps = dexPrice > uint256(oraclePrice)
             ? (dexPrice - uint256(oraclePrice)) * 10000 / uint256(oraclePrice)
             : (uint256(oraclePrice) - dexPrice) * 10000 / uint256(oraclePrice);
         require(diffBps <= maxDevBps, "Oracle mismatch");
 
+        // 4) Buy low: USDT → XAUT
         USDT.safeApprove(buyRouter, amount);
         (bool ok1, ) = buyRouter.call(buyData);
-        require(ok1, "Buy swap failed");
+        require(ok1, "Buy failed");
 
+        // 5) Sell high: XAUT → USDT
         uint256 xautBal = XAUT.balanceOf(address(this));
         require(xautBal > 0, "No XAUT");
         XAUT.safeApprove(sellRouter, xautBal);
         (bool ok2, ) = sellRouter.call(sellData);
-        require(ok2, "Sell swap failed");
+        require(ok2, "Sell failed");
 
+        // 6) Repay + profit
         uint256 finalBal = USDT.balanceOf(address(this));
         uint256 totalDebt = amount + premium;
-        require(finalBal >= totalDebt + minProfit, "No profit");
+        require(finalBal >= totalDebt + minProfit, "Insufficient profit");
 
         USDT.safeApprove(address(pool), totalDebt);
         uint256 profit = finalBal - totalDebt;

@@ -1,35 +1,63 @@
-// hardhat.config.js (at project root)
-require("@nomiclabs/hardhat-ethers");
+// hardhat.config.js
 require("dotenv").config();
+require("@nomiclabs/hardhat-ethers");
+require("@nomiclabs/hardhat-waffle");
+require("@nomiclabs/hardhat-etherscan");
 
-const { ANKR_ETH, ANKR_POLYGON, ANKR_BSC, PRIVATE_KEY } = process.env;
+const {
+  ANKR_ETH,
+  ANKR_POLYGON,
+  ANKR_BSC,
+  PRIVATE_KEY,
+  ETHERSCAN_API_KEY
+} = process.env;
+
+// If you ever have multiple keys, you can split by comma:
+// const accounts = PRIVATE_KEY ? PRIVATE_KEY.split(",") : [];
+const accounts = PRIVATE_KEY ? [PRIVATE_KEY] : [];
 
 module.exports = {
-  solidity: "0.8.17",
+  defaultNetwork: "hardhat",
+  solidity: {
+    version: "0.8.17",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
   networks: {
     hardhat: {
+      // Mainnet fork for local testing
       forking: {
         url: ANKR_ETH,
-        blockNumber: 18_000_000   // pick a recent block for determinism
+        blockNumber: 18_000_000
       },
       gas: 12_000_000,
+      // You can also customize accounts here if needed
     },
     mainnet: {
       url: ANKR_ETH,
-      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 1,
+      accounts
     },
     polygon: {
       url: ANKR_POLYGON,
-      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 137,
+      accounts
     },
     bsc: {
       url: ANKR_BSC,
-      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
-    },
-    // add more networks as needed…
+      chainId: 56,
+      accounts
+    }
+    // Add more EVM networks here as needed
   },
   etherscan: {
-    // if you want to verify on Etherscan later
-    apiKey: process.env.ETHERSCAN_API_KEY || ""
+    apiKey: ETHERSCAN_API_KEY || ""
+  },
+  mocha: {
+    timeout: 200000
   }
 };
