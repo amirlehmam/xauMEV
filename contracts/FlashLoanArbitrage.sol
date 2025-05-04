@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX‑License‑Identifier: MIT
 pragma solidity ^0.8.17;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -7,6 +7,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
+/*──────────────────────────────────────────────────────────────
+ *                        Aave V3 interfaces
+ *────────────────────────────────────────────────────────────*/
 interface IPool {
     function flashLoanSimple(
         address receiverAddress,
@@ -27,7 +30,9 @@ interface IFlashLoanSimpleReceiver {
     ) external returns (bool);
 }
 
-/// @dev Minimal subset of Uniswap V3 router we need
+/*──────────────────────────────────────────────────────────────
+ *                    Uni‑V3 router (subset)                    
+ *────────────────────────────────────────────────────────────*/
 interface ISwapRouter02 {
     struct ExactInputSingleParams {
         address tokenIn;
@@ -48,30 +53,31 @@ interface ISwapRouter02 {
 
 /**
  * @title FlashLoanArbitrage
- * @notice Aave V3 flash‑loan receiver executing single‑hop USDT⇄XAUT arbitrage
- *         with Chainlink price‑deviation guard and profit extraction.
+ * @notice Aave V3 flash‑loan receiver that performs two single‑hop swaps
+ *         (USDT ⇄ XAUT) and realises profit if the AMM price deviates
+ *         favourably from Chainlink’s on‑chain oracle.
  */
 contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceiver {
     using SafeERC20 for IERC20;
 
     /*//////////////////////////////////////////////////////////////
-                                IMMUTABLES
+                                  IMMUTABLES
     //////////////////////////////////////////////////////////////*/
     IPool  public immutable pool;
-    IERC20 public immutable USDT; // 6 dec
-    IERC20 public immutable XAUT; // 6 dec
+    IERC20 public immutable USDT;             // 6 decimals
+    IERC20 public immutable XAUT;             // 6 decimals
     AggregatorV3Interface public immutable priceFeed; // XAU/USD 8 dec
 
-    uint16 public constant REFERRAL_CODE = 0;
-    uint256 private constant MAX_BPS = 10_000;
+    uint16  public constant REFERRAL_CODE = 0;
+    uint256 private constant MAX_BPS      = 10_000;   // 100 %
 
     /*//////////////////////////////////////////////////////////////
-                                   EVENTS
+                                     EVENTS
     //////////////////////////////////////////////////////////////*/
     event ArbitrageExecuted(uint256 profitUSDT, address buyRouter, address sellRouter);
 
     /*//////////////////////////////////////////////////////////////
-                                CONSTRUCTOR
+                                  CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
     constructor(
         address _pool,
@@ -79,23 +85,28 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         address _xaut,
         address _priceFeed
     ) {
-        require(_pool != address(0) && _usdt != address(0) && _xaut != address(0) && _priceFeed != address(0), "Zero addr");
-        pool = IPool(_pool);
-        USDT = IERC20(_usdt);
-        XAUT = IERC20(_xaut);
-        priceFeed = AggregatorV3Interface(_priceFeed);
+        require(
+            _pool != address(0) &&
+            _usdt != address(0) &&
+            _xaut != address(0) &&
+            _priceFeed != address(0),
+            "Zero addr"
+        );
 
+        pool       = IPool(_pool);
+        USDT       = IERC20(_usdt);
+        XAUT       = IERC20(_xaut);
+        priceFeed  = AggregatorV3Interface(_priceFeed);
+
+        // one‑time infinite approval so the pool can pull repayment amounts
         USDT.safeApprove(_pool, type(uint256).max);
-        USDT.safeApprove(address(this), type(uint256).max);
-        XAUT.safeApprove(address(this), type(uint256).max);
     }
 
     /*//////////////////////////////////////////////////////////////
-                         EXTERNAL OWNER FUNCTIONS
+                             EXTERNAL OWNER ACTION
     //////////////////////////////////////////////////////////////*/
-
     /**
-     * @notice Entry‑point: triggers a USDT flash‑loan and executes the two swaps.
+     * @dev Triggers a USDT flash‑loan and specifies both swap calldatas.
      */
     function executeArbitrage(
         address buyRouter,
@@ -122,14 +133,14 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
     }
 
     /**
-     * @notice Rescue tokens sent by mistake.
+     * @dev Emergency token recovery.
      */
     function sweep(IERC20 token) external onlyOwner {
         token.safeTransfer(owner(), token.balanceOf(address(this)));
     }
 
     /*//////////////////////////////////////////////////////////////
-                     AAVE FLASH‑LOAN CALLBACK (no guard!)
+                          AAVE FLASH‑LOAN CALLBACK
     //////////////////////////////////////////////////////////////*/
     function executeOperation(
         address asset,
@@ -138,7 +149,12 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        require(msg.sender == address(pool) && initiator == address(this) && asset == address(USDT), "unauth");
+        require(
+            msg.sender == address(pool) &&
+            initiator  == address(this) &&
+            asset      == address(USDT),
+            "unauth"
+        );
 
         (
             address buyRouter,
@@ -149,47 +165,49 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
             uint256 maxDevBps
         ) = abi.decode(params, (address, bytes, address, bytes, uint256, uint256));
 
-        // ---------------- Oracle price ----------------
+        /*────────── 1. Oracle price (XAU/USD) ─────────*/
         (, int256 oraclePrice,,,) = priceFeed.latestRoundData();
         require(oraclePrice > 0, "oracle bad");
-        uint256 oraclePrice6 = uint256(oraclePrice) * 1e6 / 1e8;
+        uint256 oraclePrice6 = uint256(oraclePrice) * 1e6 / 1e8; // 6 decimals
 
+        /*────────── 2. Pre‑loan USDT balance ─────────*/
         uint256 balanceBefore = USDT.balanceOf(address(this));
 
-        // ---------------- First swap (USDT→XAUT) ----------------
-        USDT.forceApprove(buyRouter, amount);
-        (bool okBuy,) = buyRouter.call(buyData);
+        /*────────── 3. USDT → XAUT swap ──────────────*/
+        USDT.forceApprove(buyRouter, amount);          // overwrite any prior allowance
+        (bool okBuy, ) = buyRouter.call(buyData);
         require(okBuy, "buy swap fail");
 
         uint256 xautBal = XAUT.balanceOf(address(this));
         require(xautBal > 0, "no XAUT");
 
-        // Price deviation check
-        uint256 ammPrice6 = (amount * 1e6) / xautBal; // USDT per XAUT in 6 dec
+        // Price‑deviation guard
+        uint256 ammPrice6 = (amount * 1e6) / xautBal;  // USDT per XAUT, 6 dec
         require(_diffBps(ammPrice6, oraclePrice6) <= maxDevBps, "dev too high");
 
-        // ---------------- Second swap (XAUT→USDT) ----------------
+        /*────────── 4. XAUT → USDT swap ──────────────*/
         XAUT.forceApprove(sellRouter, xautBal);
-        (bool okSell,) = sellRouter.call(sellData);
+        (bool okSell, ) = sellRouter.call(sellData);
         require(okSell, "sell swap fail");
 
+        /*────────── 5. Profit calculation ────────────*/
         uint256 balanceAfter = USDT.balanceOf(address(this));
         uint256 profit = balanceAfter > balanceBefore + premium ? balanceAfter - balanceBefore - premium : 0;
         require(profit >= minProfit, "profit<min");
 
-        // Transfer profit
+        // Share the upside
         if (profit > 0) USDT.safeTransfer(owner(), profit);
 
-        // Repay loan
-        uint256 repayment = amount + premium;
-        USDT.forceApprove(address(pool), repayment);
+        /*────────── 6. Repayment ─────────────────────*/
+        uint256 totalOwed = amount + premium;
+        USDT.forceApprove(address(pool), totalOwed);
 
         emit ArbitrageExecuted(profit, buyRouter, sellRouter);
         return true;
     }
 
     /*//////////////////////////////////////////////////////////////
-                           INTERNAL HELPERS
+                               INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
     function _diffBps(uint256 a, uint256 b) internal pure returns (uint256) {
         uint256 diff = a > b ? a - b : b - a;
