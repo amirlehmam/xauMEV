@@ -1,5 +1,5 @@
 
-![xauMEV logo](./docs/logo.png)
+![xauMEV logo](./docs/logo.png =x250x)
 
 ## 🚀 Project Objective
 This is a next-gen, production-ready **Flash Loan Arbitrage System** focused solely on the **XAUT/USDT pair** across multiple blockchains and DEXs. Designed for institutional-grade trading, it integrates:
