@@ -5,7 +5,7 @@ const { ethers }  = require("hardhat");
 
 // ---------------- Sepolia addresses ----------------
 const POOL   = "0x4c3fd1c19e4041b10b5d2579841e1f70e43f3a97";  // Aave V3 pool (lowercase)  // Aave V3 pool
-const USDC   = "0x6fe14Cdc42c64eE1eAdfB2F205B9893fF0068337";  // test‑USDC
+const USDC   = "0x6fe14cdc42c64ee1eadfb2f205b9893ff0068337";  // test‑USDC (lowercase)  // test‑USDC
 const USDT   = "0x110C79f7f4d1c4Ad7Efd2d4A38Bf0FD3D9e55A02";  // test‑USDT
 const FEED   = "0x2f9Ec37f22021f0d0f6FE8e4e3BdBBCD0b47e1C1";  // USDT/USD feed
 const ROUTER = "0x9AC64Cc6e4415144C455BD8E4837Fea55603e5c3";  // Uni V3 router02
