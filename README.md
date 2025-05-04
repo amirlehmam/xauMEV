@@ -1,5 +1,5 @@
 
-![xauMEV logo](./docs/logo.png)
+![xauMEV logo](./docs/images/logo.png)
 
 ## 🚀 Project Objective
 This is a next-gen, production-ready **Flash Loan Arbitrage System** focused solely on the **XAUT/USDT pair** across multiple blockchains and DEXs. Designed for institutional-grade trading, it integrates:
@@ -18,7 +18,7 @@ This system is tailored for professional arbitrageurs seeking sub-second latency
 
 ## 🧠 Architecture Layers
 
-![System Architecture](./docs/architecture_diagram.png)
+![System Architecture](./docs/images/architecture_diagram.png)
 
 ### 🟤 Layer 1 – Solidity Smart Contract
 - Executes atomic flash loan arbitrage in a single transaction
@@ -198,7 +198,7 @@ Use mock tokens to simulate XAUT/USDT on testnet and deploy contracts.
 ---
 
 ## 📅 Timeline
-![Gantt Chart](./docs/gantt_chart.png)
+![Gantt Chart](./docs/images/gantt_chart.png)
 
 ---
 
