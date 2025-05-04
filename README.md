@@ -219,11 +219,6 @@ Use mock tokens to simulate XAUT/USDT on testnet and deploy contracts.
 
 ---
 
-## 🧾 License
-MIT — for commercial and institutional use.
-
----
-
 ## 👨‍💻 Maintainer
 **Amir Lehmam** — flash loan arbitrage developer  
 Contact: `@fluctue` | `amirlehmam.pro@gmail.com`
