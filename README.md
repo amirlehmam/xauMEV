@@ -69,7 +69,7 @@ project-root/
 ├── rust_engine             # Rust-based arb engine
 ├── scripts/                # Deployment / utility scripts
 ├── .env.example            # Sample environment file
-├── .gitignore              # Python gitignore template
+├── .gitignore              # Python .gitignore template
 └── README.md               # This file
 ```
 
