@@ -10,17 +10,18 @@ contract StubRouter {
         returns (uint256[] memory out)
     {
         require(path.length >= 2, "StubRouter: bad path");
-        out = new uint256/*<<<*//*>>>*/;
+
+        out = new uint256;
         out[0] = amountIn;
         out[1] = amountIn * 2;
     }
 
     function swapExactTokensForTokens(
         uint256 amountIn,
-        uint256,
+        uint256,                // amountOutMin (ignoré)
         address[] calldata path,
         address to,
-        uint256
+        uint256                 // deadline (ignoré)
     ) external returns (uint256[] memory out)
     {
         require(path.length >= 2, "StubRouter: bad path");
@@ -29,7 +30,7 @@ contract StubRouter {
         uint256 payout = amountIn * 2;
         IERC20(path[1]).transfer(to, payout);
 
-        out = new uint256/*<<<*//*>>>*/;
+        out = new uint256;
         out[0] = amountIn;
         out[1] = payout;
     }
