@@ -11,7 +11,7 @@ contract StubRouter {
     {
         require(path.length >= 2, "StubRouter: bad path");
 
-        out = new uint256;
+        out = new uint256[](2);
         out[0] = amountIn;
         out[1] = amountIn * 2;
     }
@@ -30,7 +30,7 @@ contract StubRouter {
         uint256 payout = amountIn * 2;
         IERC20(path[1]).transfer(to, payout);
 
-        out = new uint256;
+        out = new uint256[](2);
         out[0] = amountIn;
         out[1] = payout;
     }
