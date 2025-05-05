@@ -1,85 +1,133 @@
 // test/flashloan-fork.test.js
-const { expect } = require("chai");
+
+const chai   = require("chai");
+const waffle = require("ethereum-waffle");
+chai.use(waffle.solidity);
+const { expect } = chai;
+
+require("dotenv").config();
 const { ethers, network } = require("hardhat");
 
-describe("Mainnet-Fork: XAUT/USDT on Uniswap V2", function() {
-  const USDT      = "0xdAC17F958D2ee523a2206206994597C13D831ec7";      // USDT (6d) :contentReference[oaicite:0]{index=0}
-  const XAUT      = "0x68749665FF8D2d112Fa859AA293F07A622782F38";    // XAUT (6d) :contentReference[oaicite:1]{index=1}
-  const UNIV2     = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";    // Uniswap V2 Router :contentReference[oaicite:2]{index=2}
-  const PRICE_FEED= "0x214eD9Da11D2fbe465a6fc601a91e62EbEc1a0D6";    // Chainlink XAU/USD :contentReference[oaicite:3]{index=3}
+describe("Mainnet-Fork FlashLoanArbitrage (Uniswap V3)", function() {
+  const ANKR_ETH = process.env.ANKR_ETH;
+  if (!ANKR_ETH) throw new Error("Missing ANKR_ETH in .env");
 
-  let FlashLoanArb, flash, MockPool, pool;
+  // ——— Mainnet addresses ———
+  const USDT       = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+  const XAUT       = "0x68749665FF8D2d112Fa859AA293F07A622782F38";
+  const QUOTER     = "0xb27308F9F90D607463bb33eA1BeBb41C27CE5AB6";  // correct checksummed
+  const SWAP_ROUTER= "0xE592427A0AEce92De3Edee1F18E0157C05861564";
+  const PRICE_FEED = "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1A0D6";
+  const USDT_WHALE = "0x28C6c06298d514Db089934071355E5743bf21d60";
+
+  const FEE_TIER = 3000; // 0.3%
+
+  let flash, pool;
 
   before(async () => {
-    // 1) Reset the Hardhat network to a mainnet fork
+    // 1) Reset & fork Ethereum mainnet
     await network.provider.request({
       method: "hardhat_reset",
-      params: [{ forking: { url: process.env.ANKR_ETH, blockNumber: 18_000_000 } }]
+      params: [{
+        forking: {
+          jsonRpcUrl: ANKR_ETH,
+          blockNumber: 18_000_000
+        }
+      }]
     });
 
-    // 2) Deploy MockPool locally (so we control the flashLoan callback)
-    MockPool = await ethers.getContractFactory("MockPool");
+    // 2) Deploy MockPool (stub for Aave flashLoanSimple)
+    const MockPool = await ethers.getContractFactory("MockPool");
     pool = await MockPool.deploy();
+    await pool.deployed();
 
-    // 3) Deploy your FlashLoanArbitrage against the fork, pointing at:
-    //    - pool: our MockPool    
-    //    - USDT, XAUT, Chainlink feed: real addresses
-    FlashLoanArb = await ethers.getContractFactory("FlashLoanArbitrage");
-    flash = await FlashLoanArb.deploy(
-      pool.address,
-      USDT,
-      XAUT,
-      PRICE_FEED
-    );
+    // 3) Deploy your FlashLoanArbitrage pointing at real USDT/XAUT + Chainlink feed
+    const Arb = await ethers.getContractFactory("FlashLoanArbitrage");
+    flash = await Arb.deploy(pool.address, USDT, XAUT, PRICE_FEED);
     await flash.deployed();
   });
 
-  it("reads the live price of XAUT per USDT on Uniswap V2", async () => {
-    const router = new ethers.Contract(
-      UNIV2,
-      ["function getAmountsOut(uint256, address[]) view returns (uint256[])"],
+  it("quotes XAUT/USDT via Uniswap V3 Quoter", async () => {
+    // Use callStatic to avoid on-chain revert
+    const quoter = new ethers.Contract(
+      QUOTER,
+      ["function quoteExactInputSingle(address,address,uint24,uint256,uint160) returns (uint256)"],
       ethers.provider
     );
 
-    // Fetch amountsOut for 1 USDT (6 decimals)
-    const amtIn = ethers.utils.parseUnits("1", 6);
-    const amounts = await router.getAmountsOut(amtIn, [USDT, XAUT]);
-    const xautPerUsdt = ethers.utils.formatUnits(amounts[1], 6);
+    const amountIn = ethers.utils.parseUnits("1", 6); // 1 USDT
+    const xautOut = await quoter.callStatic.quoteExactInputSingle(
+      USDT, XAUT, FEE_TIER, amountIn, 0
+    );
+    const price = ethers.utils.formatUnits(xautOut, 6);
 
-    console.log(`Current XAUT/USDT on Uniswap V2: ${xautPerUsdt}`);
-    expect(parseFloat(xautPerUsdt)).to.be.greaterThan(0);
+    console.log("⚡ XAUT per USDT:", price);
+    expect(parseFloat(price)).to.be.greaterThan(0);
   });
 
-  it("runs executeOperation in a flash-loan mock using real data", async () => {
-    // 1) Prepare a tiny flash-loan so Aave mock will call executeOperation:
-    const loanAmt = ethers.utils.parseUnits("10", 6);
-    await (await ethers.getContractAt("MockERC20", USDT))
-      .mint(pool.address, loanAmt);
+  it("executes flash-loan + dual-swap via SwapRouter exactInputSingle", async () => {
+    const loanAmount = ethers.utils.parseUnits("10", 6);
 
-    // 2) Craft Uniswap V2 buy + sell calldata:
-    const uniIface = new ethers.utils.Interface([
-      "function swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"
-    ]);
-    const deadline = Math.floor(Date.now()/1000) + 300;
-    const buyCalldata = uniIface.encodeFunctionData("swapExactTokensForTokens", [
-      loanAmt, 0, [USDT, XAUT], flash.address, deadline
-    ]);
-    const sellCalldata = uniIface.encodeFunctionData("swapExactTokensForTokens", [
-      0, // amountIn will be whatever XAUT was bought— our mock pool will credit flash with XAUT in executeOperation 
-      loanAmt, [XAUT, USDT], flash.address, deadline
-    ]);
+    // Impersonate a USDT whale to fund MockPool
+    await network.provider.request({
+      method: "hardhat_impersonateAccount",
+      params: [USDT_WHALE]
+    });
+    const whale = await ethers.getSigner(USDT_WHALE);
+    const usdt  = await ethers.getContractAt("IERC20", USDT);
+    await usdt.connect(whale).transfer(pool.address, loanAmount);
+    await network.provider.request({
+      method: "hardhat_stopImpersonatingAccount",
+      params: [USDT_WHALE]
+    });
 
-    // 3) Call executeArbitrage with real router addresses + real oracle + mock pool:
+    // Build exactInputSingle calldata
+    const routerIface = new ethers.utils.Interface([
+      "function exactInputSingle((address,address,uint24,address,uint256,uint256,uint160)) external payable returns (uint256)"
+    ]);
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+
+    // Quote the exact amount of XAUT for loanAmount USDT
+    const quoter = new ethers.Contract(
+      QUOTER,
+      ["function quoteExactInputSingle(address,address,uint24,uint256,uint160) returns (uint256)"],
+      ethers.provider
+    );
+    const xautAmount = await quoter.callStatic.quoteExactInputSingle(
+      USDT, XAUT, FEE_TIER, loanAmount, 0
+    );
+
+    // Encode buy (USDT→XAUT) & sell (XAUT→USDT)
+    const buyData = routerIface.encodeFunctionData("exactInputSingle", [{
+      tokenIn:           USDT,
+      tokenOut:          XAUT,
+      fee:               FEE_TIER,
+      recipient:         flash.address,
+      deadline,
+      amountIn:          loanAmount,
+      amountOutMinimum:  0,
+      sqrtPriceLimitX96: 0
+    }]);
+    const sellData = routerIface.encodeFunctionData("exactInputSingle", [{
+      tokenIn:           XAUT,
+      tokenOut:          USDT,
+      fee:               FEE_TIER,
+      recipient:         flash.address,
+      deadline,
+      amountIn:          xautAmount,
+      amountOutMinimum:  0,
+      sqrtPriceLimitX96: 0
+    }]);
+
+    // Execute arbitrage
     await expect(
       flash.executeArbitrage(
-        UNIV2, buyCalldata,
-        UNIV2, sellCalldata,
-        loanAmt,
-        0,     // no minimum profit for test
-        1_000  // slack devBps
+        SWAP_ROUTER, buyData,
+        SWAP_ROUTER, sellData,
+        loanAmount,
+        0,     // minProfit
+        1000   // maxDevBps tolerance
       )
     ).to.emit(flash, "ArbitrageExecuted");
-
-    // If it emits, you know your callback logic runs successfully
   });
 });
