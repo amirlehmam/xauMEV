@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }                   # Async runtime :contentReference[oaicite:3]{index=3}
-ethers = { version = "2.0.0", features = ["ws", "abigen", "tokio-runtime"] }  # Ethereum client :contentReference[oaicite:4]{index=4}
-dotenv = "0.15.0"                                                # Load .env configs
+# ethers v2.x with WebSocket support
+ethers = { version = "2.0", features = ["ws"] }         
+
+# Tokio async runtime with full feature set (macros, time, rt)
+tokio  = { version = "1", features = ["full"] }          
+
+# Load environment variables from .env
+dotenv = "0.15.0"                                        
