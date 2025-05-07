@@ -131,7 +131,7 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
             msg.sender == address(pool) &&
             initiator  == address(this) &&
             asset      == address(USDT),
-            "unauth"
+            "unauth: sender or initiator or asset mismatch"
         );
 
         (
@@ -143,39 +143,56 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
             uint256 maxDevBps
         ) = abi.decode(params, (address, bytes, address, bytes, uint256, uint256));
 
+        uint256 profit = 0;
+
         /*───────── 1. Oracle price ─────────*/
-        (, int256 oracle,,,) = priceFeed.latestRoundData();
-        require(oracle > 0, "oracle bad");
-        uint256 oraclePrice6 = uint256(oracle) * 1e6 / 1e8;
+        try priceFeed.latestRoundData() returns (uint80, int256 oracle, uint256, uint256, uint80) {
+            require(oracle > 0, "oracle price <= 0");
+            uint256 oraclePrice6 = uint256(oracle) * 1e6 / 1e8;
 
-        /*───────── 2. Balances avant swap ──*/
-        uint256 balBefore = USDT.balanceOf(address(this));
+            /*───────── 2. Balances avant swap ──*/
+            uint256 balBefore = USDT.balanceOf(address(this));
 
-        /*───────── 3. USDT → XAUT ──────────*/
-        USDT.forceApprove(buyRouter, amount);
-        (bool okBuy, ) = buyRouter.call(buyData);
-        require(okBuy, "buy fail");
+            /*───────── 3. USDT → XAUT ──────────*/
+            USDT.forceApprove(buyRouter, amount);
+            (bool okBuy, bytes memory buyResult) = buyRouter.call(buyData);
+            if (!okBuy) {
+                string memory reason = _getRevertMsg(buyResult);
+                revert(string(abi.encodePacked("buy fail: ", reason)));
+            }
 
-        uint256 xautBal = XAUT.balanceOf(address(this));
-        require(xautBal > 0, "no XAUT");
+            uint256 xautBal = XAUT.balanceOf(address(this));
+            require(xautBal > 0, "no XAUT received after swap");
 
-        /* Price deviation guard */
-        uint256 ammPrice6 = (amount * 1e6) / xautBal;
-        require(_diffBps(ammPrice6, oraclePrice6) <= maxDevBps, "dev too big");
+            /* Price deviation guard */
+            uint256 ammPrice6 = (amount * 1e6) / xautBal;
+            uint256 deviation = _diffBps(ammPrice6, oraclePrice6);
+            require(deviation <= maxDevBps, string(abi.encodePacked("deviation too big: ", _uintToString(deviation), " > ", _uintToString(maxDevBps))));
 
-        /*───────── 4. XAUT → USDT ──────────*/
-        XAUT.forceApprove(sellRouter, xautBal);
-        (bool okSell, ) = sellRouter.call(sellData);
-        require(okSell, "sell fail");
+            /*───────── 4. XAUT → USDT ──────────*/
+            XAUT.forceApprove(sellRouter, xautBal);
+            (bool okSell, bytes memory sellResult) = sellRouter.call(sellData);
+            if (!okSell) {
+                string memory reason = _getRevertMsg(sellResult);
+                revert(string(abi.encodePacked("sell fail: ", reason)));
+            }
 
-        /*───────── 5. Profit ───────────────*/
-        uint256 balAfter = USDT.balanceOf(address(this));
-        uint256 profit   = balAfter > balBefore + premium ? balAfter - balBefore - premium : 0;
-        require(profit >= minProfit, "profit<min");
-        if (profit > 0) USDT.safeTransfer(owner(), profit);
+            /*───────── 5. Profit ───────────────*/
+            uint256 balAfter = USDT.balanceOf(address(this));
+            if (balAfter > balBefore + premium) {
+                profit = balAfter - balBefore - premium;
+            }
+            require(profit >= minProfit, string(abi.encodePacked("profit < min: ", _uintToString(profit), " < ", _uintToString(minProfit))));
+            
+            if (profit > 0) USDT.safeTransfer(owner(), profit);
 
-        /*───────── 6. Repayment ────────────*/
-        USDT.forceApprove(address(pool), amount + premium);
+            /*───────── 6. Repayment ────────────*/
+            USDT.forceApprove(address(pool), amount + premium);
+        } catch Error(string memory reason) {
+            revert(string(abi.encodePacked("oracle error: ", reason)));
+        } catch (bytes memory) {
+            revert("oracle call failed");
+        }
 
         emit ArbitrageExecuted(profit, buyRouter, sellRouter);
         return true;
@@ -187,5 +204,43 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
     function _diffBps(uint256 a, uint256 b) internal pure returns (uint256) {
         uint256 diff = a > b ? a - b : b - a;
         return diff * MAX_BPS / b;
+    }
+
+    function _getRevertMsg(bytes memory _returnData) internal pure returns (string memory) {
+        // If the _res length is less than 68, then the transaction failed silently (without a revert message)
+        if (_returnData.length < 68) return "Transaction reverted silently";
+        
+        assembly {
+            // Slice the sighash.
+            _returnData := add(_returnData, 0x04)
+        }
+        return abi.decode(_returnData, (string));
+    }
+    
+    function _uintToString(uint256 value) internal pure returns (string memory) {
+        // Special case for 0
+        if (value == 0) {
+            return "0";
+        }
+        
+        // Find the length of the number
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        
+        // Create a byte array with the correct length
+        bytes memory buffer = new bytes(digits);
+        
+        // Fill the buffer from right to left
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        
+        return string(buffer);
     }
 }

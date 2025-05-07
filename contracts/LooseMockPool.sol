@@ -9,6 +9,10 @@ import "./FlashLoanArbitrage.sol";   // interface IFlashLoanSimpleReceiver
  *       Assez pour les tests locaux ; à ne JAMAIS utiliser en production !
  */
 contract LooseMockPool {
+    event FlashLoanInitiated(address receiver, address asset, uint256 amount);
+    event FlashLoanCallbackCalled(address receiver, address asset, uint256 amount);
+    event FlashLoanRepaid(address receiver, address asset, uint256 amount);
+    
     function flashLoanSimple(
         address receiver,
         address asset,
@@ -16,19 +20,34 @@ contract LooseMockPool {
         bytes calldata params,
         uint16 /* referralCode (ignoré) */
     ) external {
+        // Check if we have enough balance
+        uint256 balance = IERC20(asset).balanceOf(address(this));
+        require(balance >= amount, "LooseMockPool: insufficient balance");
+        
         // 1) envoie les fonds
-        IERC20(asset).transfer(receiver, amount);
+        emit FlashLoanInitiated(receiver, asset, amount);
+        bool success = IERC20(asset).transfer(receiver, amount);
+        require(success, "LooseMockPool: transfer failed");
 
         // 2) callback arbitragiste (premium = 0 pour simplifier)
-        IFlashLoanSimpleReceiver(receiver).executeOperation(
+        emit FlashLoanCallbackCalled(receiver, asset, amount);
+        try IFlashLoanSimpleReceiver(receiver).executeOperation(
             asset,
             amount,
             0,              // premium
             receiver,
             params
-        );
+        ) returns (bool result) {
+            require(result, "LooseMockPool: executeOperation returned false");
+        } catch Error(string memory reason) {
+            revert(string(abi.encodePacked("LooseMockPool: executeOperation failed: ", reason)));
+        } catch (bytes memory) {
+            revert("LooseMockPool: executeOperation failed with no reason");
+        }
 
         // 3) réclame le remboursement de 'amount' uniquement
-        IERC20(asset).transferFrom(receiver, address(this), amount);
+        emit FlashLoanRepaid(receiver, asset, amount);
+        success = IERC20(asset).transferFrom(receiver, address(this), amount);
+        require(success, "LooseMockPool: repayment failed");
     }
 }
