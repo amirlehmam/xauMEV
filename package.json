@@ -7,6 +7,7 @@
     "test": "hardhat test --network hardhat"
   },
   "dependencies": {
+    "@aave/core-v3": "^1.19.3",
     "@chainlink/contracts": "^0.4.2",
     "@openzeppelin/contracts": "^4.9.6",
     "dotenv": "^16.5.0"
