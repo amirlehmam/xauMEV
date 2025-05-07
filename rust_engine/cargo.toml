@@ -1,0 +1,10 @@
+[package]
+name = "rust_scanner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ethers   = { version = "2.0", features = ["ws", "abigen"] }  # WS + Abigen support :contentReference[oaicite:0]{index=0}
+tokio    = { version = "1", features = ["full"] }           # Async runtime :contentReference[oaicite:1]{index=1}
+dotenv   = "0.15.0"                                         # .env loading
+anyhow   = "1.0"                                            # Error handling
