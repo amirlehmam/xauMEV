@@ -12,6 +12,8 @@ contract LooseMockPool {
     event FlashLoanInitiated(address receiver, address asset, uint256 amount);
     event FlashLoanCallbackCalled(address receiver, address asset, uint256 amount);
     event FlashLoanRepaid(address receiver, address asset, uint256 amount);
+    event FlashLoanError(string reason);
+    event FlashLoanErrorBytes(bytes data);
     
     function flashLoanSimple(
         address receiver,
@@ -35,13 +37,15 @@ contract LooseMockPool {
             asset,
             amount,
             0,              // premium
-            receiver,
+            msg.sender,     // initiator (should be the caller of flashLoanSimple)
             params
         ) returns (bool result) {
             require(result, "LooseMockPool: executeOperation returned false");
         } catch Error(string memory reason) {
+            emit FlashLoanError(reason);
             revert(string(abi.encodePacked("LooseMockPool: executeOperation failed: ", reason)));
-        } catch (bytes memory) {
+        } catch (bytes memory data) {
+            emit FlashLoanErrorBytes(data);
             revert("LooseMockPool: executeOperation failed with no reason");
         }
 

@@ -1,55 +1,42 @@
 // test/flashloan‑fork.test.js
 require("@nomicfoundation/hardhat-chai-matchers");   // .emit / .reverted
 const { expect } = require("chai");
-const { ethers, network }  = require("hardhat");
+const { ethers }  = require("hardhat");
 
-describe("Flash‑loan smoke on Mainnet Fork", () => {
-  /*───────────── RPC (.env) ─────────────*/
-  const RPC = process.env.ANKR_ETH;
-  if (!RPC) throw new Error("Add ANKR_ETH in .env");
-
+describe("Flash‑loan smoke on Local Network", () => {
   let owner, flash, pool, router, priceFeed;
   let usdt, mockWeth;
 
   before(async () => {
-    console.log("Setting up mainnet fork...");
-    await network.provider.request({
-      method: "hardhat_reset",
-      params: [{ forking: { jsonRpcUrl: RPC, blockNumber: 18_000_000 } }]
-    });
-    
     [owner] = await ethers.getSigners();
     console.log("Using signer:", owner.address);
 
     /* ── mock tokens ──────────────────────────────── */
     console.log("Creating mock tokens...");
     const ERC20 = await ethers.getContractFactory("MockERC20");
-    usdt = await ethers.getContractAt("IERC20", "0xdac17f958d2ee523a2206206994597c13d831ec7");
+    usdt = await ERC20.deploy("Mock USDT", "mUSDT", 6);
+    await usdt.deployed();
     mockWeth = await ERC20.deploy("Mock WETH", "mWETH", 6);
     await mockWeth.deployed();
+    console.log("Mock USDT deployed at:", usdt.address);
     console.log("Mock WETH deployed at:", mockWeth.address);
 
     /* ── mock pool (seeded with 1000 USDT liquidity) ─ */
-    console.log("Deploying MockPool...");
-    const Pool = await ethers.getContractFactory("MockPool");
+    console.log("Deploying LooseMockPool...");
+    const Pool = await ethers.getContractFactory("LooseMockPool");
     pool = await Pool.deploy();
     await pool.deployed();
-    console.log("MockPool deployed at:", pool.address);
+    console.log("LooseMockPool deployed at:", pool.address);
     
-    // Fund the pool with USDT from a whale
-    const WHALE = "0x28c6c06298d514db089934071355e5743bf21d60";
-    await network.provider.request({ method: "hardhat_impersonateAccount", params: [WHALE] });
-    const whale = await ethers.getSigner(WHALE);
-    const loan = ethers.utils.parseUnits("1000", 6);
-    await usdt.connect(whale).transfer(pool.address, loan);
-    console.log("Transferred 1000 USDT to pool");
-    await network.provider.request({ method: "hardhat_stopImpersonateAccount", params: [WHALE] }).catch(()=>{});
+    // Fund the pool with USDT
+    await usdt.mint(pool.address, ethers.utils.parseUnits("1000", 6));
+    console.log("Minted 1000 USDT to pool");
 
     /* ── router + price feed stubs ─────────────────── */
-    console.log("Deploying MockRouter and MockPriceFeed...");
-    router = await (await ethers.getContractFactory("MockRouter")).deploy();
+    console.log("Deploying StubRouter and MockPriceFeed...");
+    router = await (await ethers.getContractFactory("StubRouter")).deploy();
     priceFeed = await (await ethers.getContractFactory("MockPriceFeed")).deploy();
-    console.log("MockRouter deployed at:", router.address);
+    console.log("StubRouter deployed at:", router.address);
     console.log("MockPriceFeed deployed at:", priceFeed.address);
 
     /* ── contract under test ───────────────────────── */
@@ -66,8 +53,12 @@ describe("Flash‑loan smoke on Mainnet Fork", () => {
 
     /* ── seed balances so repayment succeeds ───────── */
     await mockWeth.mint(flash.address, ethers.utils.parseUnits("0.5", 6)); // 0.5 WETH
-    await usdt.connect(whale).transfer(flash.address, ethers.utils.parseUnits("10", 6)); // +10 USDT to pay fees
+    await usdt.mint(flash.address, ethers.utils.parseUnits("10", 6)); // +10 USDT to pay fees
     console.log("Seeded contract with tokens");
+    
+    // Mint some mockWeth to the router for it to transfer during swaps
+    await mockWeth.mint(router.address, ethers.utils.parseUnits("2000", 6)); // 2000 WETH
+    console.log("Minted 2000 WETH to router");
   });
 
   it("borrows 1000 USDT and returns it", async () => {
@@ -80,12 +71,42 @@ describe("Flash‑loan smoke on Mainnet Fork", () => {
     console.log("Flash contract balances before execution:");
     console.log("- USDT:", ethers.utils.formatUnits(flashUsdtBefore, 6));
     console.log("- Mock WETH:", ethers.utils.formatUnits(flashWethBefore, 6));
+    
+    // Check router balances
+    const routerWethBefore = await mockWeth.balanceOf(router.address);
+    console.log("Router balances before execution:");
+    console.log("- Mock WETH:", ethers.utils.formatUnits(routerWethBefore, 6));
+    
+    // Create proper calldata for the swaps
+    const iface = new ethers.utils.Interface([
+      "function swapExactTokensForTokens(uint256,uint256,address[],address,uint256) returns (uint256[])"
+    ]);
+    const deadline = Math.floor(Date.now() / 1000) + 360;
 
+    const buyData = iface.encodeFunctionData("swapExactTokensForTokens", [
+      loan,
+      0,
+      [usdt.address, mockWeth.address],
+      flash.address,
+      deadline
+    ]);
+
+    const sellData = iface.encodeFunctionData("swapExactTokensForTokens", [
+      0,          // amountIn = "use entire balance" inside the contract
+      0,
+      [mockWeth.address, usdt.address],
+      flash.address,
+      deadline
+    ]);
+    
+    console.log("Buy data:", buyData);
+    console.log("Sell data:", sellData);
+    
     // Execute arbitrage
     try {
       const tx = await flash.executeArbitrage(
-        router.address, "0x",   // dummy buy
-        router.address, "0x",   // dummy sell
+        router.address, buyData,
+        router.address, sellData,
         loan,
         0,                      // minProfit
         10_000,                 // maxDevBps (ignored by mocks)
@@ -104,6 +125,22 @@ describe("Flash‑loan smoke on Mainnet Fork", () => {
         console.log("Profit:", ethers.utils.formatUnits(arbitrageEvents[0].args.profitUSDT, 6), "USDT");
       } else {
         console.log("No ArbitrageExecuted event found");
+      }
+      
+      // Check for LooseMockPool events
+      const flashLoanInitiatedEvents = receipt.events.filter(e => e.event === "FlashLoanInitiated");
+      if (flashLoanInitiatedEvents.length > 0) {
+        console.log("FlashLoanInitiated event found!");
+      }
+      
+      const flashLoanCallbackCalledEvents = receipt.events.filter(e => e.event === "FlashLoanCallbackCalled");
+      if (flashLoanCallbackCalledEvents.length > 0) {
+        console.log("FlashLoanCallbackCalled event found!");
+      }
+      
+      const flashLoanRepaidEvents = receipt.events.filter(e => e.event === "FlashLoanRepaid");
+      if (flashLoanRepaidEvents.length > 0) {
+        console.log("FlashLoanRepaid event found!");
       }
       
       // Expect the ArbitrageExecuted event
@@ -126,5 +163,10 @@ describe("Flash‑loan smoke on Mainnet Fork", () => {
     console.log("Flash contract balances after execution:");
     console.log("- USDT:", ethers.utils.formatUnits(flashUsdtAfter, 6));
     console.log("- Mock WETH:", ethers.utils.formatUnits(flashWethAfter, 6));
+    
+    // Check router balances
+    const routerWethAfter = await mockWeth.balanceOf(router.address);
+    console.log("Router balances after execution:");
+    console.log("- Mock WETH:", ethers.utils.formatUnits(routerWethAfter, 6));
   });
 });
