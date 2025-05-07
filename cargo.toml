@@ -1,0 +1,9 @@
+[package]
+name = "rust_scanner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }                   # Async runtime :contentReference[oaicite:3]{index=3}
+ethers = { version = "2.0.0", features = ["ws", "abigen", "tokio-runtime"] }  # Ethereum client :contentReference[oaicite:4]{index=4}
+dotenv = "0.15.0"                                                # Load .env configs
