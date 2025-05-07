@@ -5,7 +5,7 @@ const { ethers }  = require("hardhat");
 
 describe("Flash‑loan smoke on Local Network", () => {
   let owner, flash, pool, router, priceFeed;
-  let usdt, mockWeth;
+  let usdt, xaut;
 
   before(async () => {
     [owner] = await ethers.getSigners();
@@ -16,10 +16,10 @@ describe("Flash‑loan smoke on Local Network", () => {
     const ERC20 = await ethers.getContractFactory("MockERC20");
     usdt = await ERC20.deploy("Mock USDT", "mUSDT", 6);
     await usdt.deployed();
-    mockWeth = await ERC20.deploy("Mock WETH", "mWETH", 6);
-    await mockWeth.deployed();
+    xaut = await ERC20.deploy("Mock XAUT", "mXAUT", 6);
+    await xaut.deployed();
     console.log("Mock USDT deployed at:", usdt.address);
-    console.log("Mock WETH deployed at:", mockWeth.address);
+    console.log("Mock XAUT deployed at:", xaut.address);
 
     /* ── mock pool (seeded with 1000 USDT liquidity) ─ */
     console.log("Deploying LooseMockPool...");
@@ -45,20 +45,26 @@ describe("Flash‑loan smoke on Local Network", () => {
     flash = await Flash.deploy(
       pool.address,
       usdt.address,
-      mockWeth.address,
+      xaut.address,
       priceFeed.address
     );
     await flash.deployed();
     console.log("FlashLoanArbitrage deployed at:", flash.address);
 
     /* ── seed balances so repayment succeeds ───────── */
-    await mockWeth.mint(flash.address, ethers.utils.parseUnits("0.5", 6)); // 0.5 WETH
+    await xaut.mint(flash.address, ethers.utils.parseUnits("0.5", 6)); // 0.5 XAUT
     await usdt.mint(flash.address, ethers.utils.parseUnits("10", 6)); // +10 USDT to pay fees
     console.log("Seeded contract with tokens");
     
-    // Mint some mockWeth to the router for it to transfer during swaps
-    await mockWeth.mint(router.address, ethers.utils.parseUnits("2000", 6)); // 2000 WETH
-    console.log("Minted 2000 WETH to router");
+    // Mint tokens to the router for it to transfer during swaps
+    await xaut.mint(router.address, ethers.utils.parseUnits("2000", 6)); // 2000 XAUT
+    await usdt.mint(router.address, ethers.utils.parseUnits("2000", 6)); // 2000 USDT
+    console.log("Minted 2000 XAUT and 2000 USDT to router");
+    
+    // Approve tokens for the flash contract
+    await usdt.connect(owner).approve(flash.address, ethers.constants.MaxUint256);
+    await xaut.connect(owner).approve(flash.address, ethers.constants.MaxUint256);
+    console.log("Approved tokens for flash contract");
   });
 
   it("borrows 1000 USDT and returns it", async () => {
@@ -67,15 +73,17 @@ describe("Flash‑loan smoke on Local Network", () => {
 
     // Check balances before
     const flashUsdtBefore = await usdt.balanceOf(flash.address);
-    const flashWethBefore = await mockWeth.balanceOf(flash.address);
+    const flashXautBefore = await xaut.balanceOf(flash.address);
     console.log("Flash contract balances before execution:");
     console.log("- USDT:", ethers.utils.formatUnits(flashUsdtBefore, 6));
-    console.log("- Mock WETH:", ethers.utils.formatUnits(flashWethBefore, 6));
+    console.log("- XAUT:", ethers.utils.formatUnits(flashXautBefore, 6));
     
     // Check router balances
-    const routerWethBefore = await mockWeth.balanceOf(router.address);
+    const routerUsdtBefore = await usdt.balanceOf(router.address);
+    const routerXautBefore = await xaut.balanceOf(router.address);
     console.log("Router balances before execution:");
-    console.log("- Mock WETH:", ethers.utils.formatUnits(routerWethBefore, 6));
+    console.log("- USDT:", ethers.utils.formatUnits(routerUsdtBefore, 6));
+    console.log("- XAUT:", ethers.utils.formatUnits(routerXautBefore, 6));
     
     // Create proper calldata for the swaps
     const iface = new ethers.utils.Interface([
@@ -86,7 +94,7 @@ describe("Flash‑loan smoke on Local Network", () => {
     const buyData = iface.encodeFunctionData("swapExactTokensForTokens", [
       loan,
       0,
-      [usdt.address, mockWeth.address],
+      [usdt.address, xaut.address],
       flash.address,
       deadline
     ]);
@@ -94,13 +102,13 @@ describe("Flash‑loan smoke on Local Network", () => {
     const sellData = iface.encodeFunctionData("swapExactTokensForTokens", [
       0,          // amountIn = "use entire balance" inside the contract
       0,
-      [mockWeth.address, usdt.address],
+      [xaut.address, usdt.address],
       flash.address,
       deadline
     ]);
     
-    console.log("Buy data:", buyData);
-    console.log("Sell data:", sellData);
+    console.log("Buy data:", buyData.substring(0, 100) + "...");
+    console.log("Sell data:", sellData.substring(0, 100) + "...");
     
     // Execute arbitrage
     try {
@@ -159,14 +167,16 @@ describe("Flash‑loan smoke on Local Network", () => {
 
     // Check balances after
     const flashUsdtAfter = await usdt.balanceOf(flash.address);
-    const flashWethAfter = await mockWeth.balanceOf(flash.address);
+    const flashXautAfter = await xaut.balanceOf(flash.address);
     console.log("Flash contract balances after execution:");
     console.log("- USDT:", ethers.utils.formatUnits(flashUsdtAfter, 6));
-    console.log("- Mock WETH:", ethers.utils.formatUnits(flashWethAfter, 6));
+    console.log("- XAUT:", ethers.utils.formatUnits(flashXautAfter, 6));
     
     // Check router balances
-    const routerWethAfter = await mockWeth.balanceOf(router.address);
+    const routerUsdtAfter = await usdt.balanceOf(router.address);
+    const routerXautAfter = await xaut.balanceOf(router.address);
     console.log("Router balances after execution:");
-    console.log("- Mock WETH:", ethers.utils.formatUnits(routerWethAfter, 6));
+    console.log("- USDT:", ethers.utils.formatUnits(routerUsdtAfter, 6));
+    console.log("- XAUT:", ethers.utils.formatUnits(routerXautAfter, 6));
   });
 });
