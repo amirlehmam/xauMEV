@@ -9,7 +9,7 @@ use ethers::{
     abi::{Function, Param, ParamType, Token},
     core::types::Address,
     middleware::{
-        gas_escalator::{Frequency, GasEscalatorMiddleware, Percent},
+        gas_escalator::{Frequency, GasEscalatorMiddleware, GeometricGasPrice},
         nonce_manager::NonceManagerMiddleware,
         SignerMiddleware,
     },
@@ -17,22 +17,13 @@ use ethers::{
     signers::Signer,
     types::{Bytes, U256},
 };
+use ethers::providers::Middleware;
 
 /// ───────────────────────────────────────────────────────────
 /// 1. Solidity flash‑loan contract ABI (only the entry we call)
 abigen!(
     FlashLoanArbitrage,
-    r#"[
-        function executeArbitrage(
-            address buyRouter,
-            bytes   buyData,
-            address sellRouter,
-            bytes   sellData,
-            uint256 loanAmount,
-            uint256 minProfit,
-            uint256 maxDevBps
-        ) external
-    ]"#,
+    r#"function executeArbitrage(address buyRouter, bytes buyData, address sellRouter, bytes sellData, uint256 loanAmount, uint256 minProfit, uint256 maxDevBps) external"#,
 );
 
 /// ───────────────────────────────────────────────────────────
@@ -94,14 +85,17 @@ pub async fn fire(
     let chain_id = provider.get_chainid().await?.as_u64();
 
     let wallet: LocalWallet = env::var("PRIVATE_KEY")?.parse::<LocalWallet>()?.with_chain_id(chain_id);
-    let client = SignerMiddleware::new(
-        GasEscalatorMiddleware::new(
-            NonceManagerMiddleware::new(provider, wallet.address()),
-            Frequency::PerBlock,
-            Percent::new(15),
-        ),
-        wallet,
+    let escalator = GeometricGasPrice::new(
+        1.125,
+        60u64,
+        Some(U256::from(50_000_000_000u64)),
     );
+    let escalated = GasEscalatorMiddleware::new(
+        NonceManagerMiddleware::new(provider, wallet.address()),
+        escalator,
+        Frequency::PerBlock,
+    );
+    let client = SignerMiddleware::new(escalated, wallet);
     let client = Arc::new(client);
 
     // ── Trade sizing & safety limits (for demo: fixed 10 000 USDT)

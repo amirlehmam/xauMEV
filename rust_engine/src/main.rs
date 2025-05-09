@@ -13,6 +13,7 @@ use ethers::{
     middleware::{
         gas_escalator::{Frequency, GasEscalatorMiddleware, GeometricGasPrice},
         nonce_manager::NonceManagerMiddleware,
+        SignerMiddleware,
     },
     providers::{Middleware, Provider, StreamExt, Ws},
     signers::{LocalWallet, Signer},
@@ -21,6 +22,7 @@ use ethers::{
 use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::info;
+mod tx_executor;
 
 // ── Factory ABI (only need getPair) ──────────────────────────────────────
 abigen!(
@@ -133,7 +135,15 @@ async fn main() -> Result<()> {
 
             if spread_bps >= threshold_bps {
                 info!("⚡ {sym:>6}  {spread_bps:.2} bps  uni={p_uni:.5}  sushi={p_sushi:.5}");
-                // TODO: craft calldata & send Flashbots bundle via client.clone()
+                let _ = tx_executor::fire(
+                    &ws_url,
+                    flash_contract,
+                    uni_router,
+                    sushi_router,
+                    usdt,
+                    *taddr.get(&sym).unwrap(),
+                    spread_bps as u32,
+                ).await;
             }
         }
     }

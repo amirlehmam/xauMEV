@@ -1,4 +1,3 @@
-
 ![xauMEV logo](./docs/images/logo.png)
 
 ## 🚀 Project Objective
