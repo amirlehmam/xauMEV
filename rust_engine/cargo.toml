@@ -1,10 +1,14 @@
 [package]
-name = "rust_scanner"
+name    = "rust_engine"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ethers = { version = "2.0", features = ["abigen","ws","eip712"] }
-tokio  = { version = "1.37", features = ["rt-multi-thread","macros"] }
-dotenv = "0.15"
-anyhow = "1.0"
+ethers              = { version = "2.0", features = ["abigen","ws","eip712","multicall","flashbots"] }
+tokio               = { version = "1.37", features = ["rt-multi-thread","macros"] }
+dotenv              = "0.15"
+anyhow              = "1.0"
+serde               = { version = "1.0", features = ["derive"] }
+serde_json          = "1.0"
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["fmt","env-filter"] }
