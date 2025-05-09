@@ -1,7 +1,8 @@
 // SPDX‑License‑Identifier: MIT
 //
-// 50‑pair Uniswap–Sushi scanner with Flashbots sender
-// Compiles on: ethers 2.0.14  •  ethers‑flashbots 0.15
+// Lightning‑fast Uniswap/Sushi scanner with Flashbots bundle sender.
+// Works with:  ethers 2.0.14  •  ethers‑flashbots 0.15
+//
 
 use std::{collections::HashMap, env, sync::Arc, time::Duration};
 
@@ -14,7 +15,6 @@ use ethers::{
         nonce_manager::NonceManagerMiddleware,
         SignerMiddleware,
     },
-    prelude::*,
     providers::{Provider, StreamExt, Ws},
     signers::LocalWallet,
     types::{Address, BlockNumber, Filter, Log, U256},
@@ -23,23 +23,18 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::info;
 
-// ─── Minimal ABIs ────────────────────────────────────────────────────────
+// ── Minimal ABI bindings ────────────────────────────────────────────────
 abigen!(
     UniswapV2Factory,
-    r#"[ function getPair(address,address) view returns (address) ]"#,
-);
-
-abigen!(
-    UniswapV2Pair,
-    r#"[ event Sync(uint112,uint112) function token0() view returns (address) function token1() view returns (address) ]"#,
+    r#"[function getPair(address,address) view returns (address)]"#,
 );
 
 abigen!(
     FlashLoanArb,
-    r#"[ function executeArbitrage(address,bytes,address,bytes,uint256,uint256,uint256) ]"#,
+    r#"[function executeArbitrage(address,bytes,address,bytes,uint256,uint256,uint256)]"#,
 );
 
-// ─── Data structures ────────────────────────────────────────────────────
+// ── Local structs ───────────────────────────────────────────────────────
 #[derive(Debug, Deserialize)]
 struct Token {
     symbol:   String,
@@ -54,14 +49,15 @@ struct Reserves {
     last_updated: u64,
 }
 
-// ─── Main ───────────────────────────────────────────────────────────────
+// ── Main ────────────────────────────────────────────────────────────────
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // .env + logger
     dotenv().ok();
     tracing_subscriber::fmt().with_env_filter("info").init();
 
-    // ENV
-    let ws_url             = env::var("ETH_WS_URL")?;
+    // ── ENV vars
+    let ws_url              = env::var("ETH_WS_URL")?;
     let uni_factory: Address   = env::var("UNISWAP_FACTORY")?.parse()?;
     let sushi_factory: Address = env::var("SUSHI_FACTORY")?.parse()?;
     let uni_router: Address    = env::var("UNISWAP_ROUTER")?.parse()?;
@@ -70,24 +66,20 @@ async fn main() -> Result<()> {
     let threshold_bps: f64     = env::var("SPREAD_THRESHOLD_BPS")?.parse()?;
     let flash_contract: Address= env::var("FLASHLOAN_ARBITRAGE")?.parse()?;
 
-    // Provider + gas escalator + signer
-    let ws        = Ws::connect(&ws_url).await?;
-    let base      = Provider::new(ws).interval(Duration::from_millis(50));
-    let escalator = GeometricGasPrice::new(
-        1.125,                           // 12.5 % bump factor
-        U256::from(50_000_000_000u64),   // start at 50 gwei
-        None::<U256>,                    // no hard cap
-    );
-    let provider  = GasEscalatorMiddleware::new(base, escalator, Frequency::PerBlock);
+    // ── Base WebSocket provider (PubsubClient)
+    let ws         = Ws::connect(&ws_url).await?;
+    let base_prov  = Provider::new(ws).interval(Duration::from_millis(50));
+    let arc_base   = Arc::new(base_prov.clone()); // for listeners & getPair
 
-    let wallet: LocalWallet = env::var("PRIVATE_KEY")?
-        .parse::<LocalWallet>()?
-        .with_chain_id(1u64);
+    // ── Gas‑escalated signing client
+    let ggp     = GeometricGasPrice::new(1.125, 50_000_000_000u64, 60u64); // 50 gwei start, +12.5 %/block, 1 min horizon
+    let escal   = GasEscalatorMiddleware::new(base_prov, ggp, Frequency::PerBlock);
 
-    let provider  = NonceManagerMiddleware::new(provider, wallet.address());
-    let client    = Arc::new(SignerMiddleware::new(provider, wallet));
+    let wallet: LocalWallet = env::var("PRIVATE_KEY")?.parse::<LocalWallet>()?.with_chain_id(1u64);
+    let signer  = SignerMiddleware::new(escal, wallet);
+    let client  = Arc::new(NonceManagerMiddleware::new(signer, wallet.address()));
 
-    // Load token list
+    // ── Load watch‑list
     let tokens: Vec<Token> =
         serde_json::from_str(&std::fs::read_to_string("config/tokens.json")?)?;
 
@@ -98,52 +90,52 @@ async fn main() -> Result<()> {
     let mut uni_map   : HashMap<String, Reserves> = HashMap::new();
     let mut sushi_map : HashMap<String, Reserves> = HashMap::new();
     let mut decimals  : HashMap<String, u8>       = HashMap::new();
+    let mut addr_map  : HashMap<String, Address>  = HashMap::new();
 
-    // Discover pools and spawn listeners
+    // ── Discover pools & spawn listeners
     for t in &tokens {
         decimals.insert(t.symbol.clone(), t.decimals);
+        addr_map.insert(t.symbol.clone(), t.address);
 
-        let uni_pair = UniswapV2Factory::new(uni_factory, client.clone())
+        let uni_pair = UniswapV2Factory::new(uni_factory, arc_base.clone())
             .get_pair(t.address, usdt)
             .call()
             .await?;
-        let sushi_pair = UniswapV2Factory::new(sushi_factory, client.clone())
+        let sushi_pair = UniswapV2Factory::new(sushi_factory, arc_base.clone())
             .get_pair(t.address, usdt)
             .call()
             .await?;
-        if uni_pair.is_zero() || sushi_pair.is_zero() {
-            continue;
-        }
+        if uni_pair.is_zero() || sushi_pair.is_zero() { continue; }
 
-        spawn_listener(client.clone(), t.symbol.clone(), uni_pair, true,  tx.clone());
-        spawn_listener(client.clone(), t.symbol.clone(), sushi_pair, false, tx.clone());
+        spawn_listener(arc_base.clone(), t.symbol.clone(), uni_pair,  true,  tx.clone());
+        spawn_listener(arc_base.clone(), t.symbol.clone(), sushi_pair,false, tx.clone());
     }
-    info!("✅  listeners started for {} tokens", decimals.len());
+    info!("✅  listeners running for {} tokens", decimals.len());
 
-    // Hot loop
+    // ── Hot loop
     while let Ok((sym, is_uni, res)) = rx.recv().await {
-        if is_uni { uni_map.insert(sym.clone(), res); }
-        else      { sushi_map.insert(sym.clone(), res); }
+        if is_uni { uni_map.insert(sym.clone(), res); } else { sushi_map.insert(sym.clone(), res); }
 
         if let (Some(u), Some(s)) = (uni_map.get(&sym), sushi_map.get(&sym)) {
-            let dec     = *decimals.get(&sym).unwrap_or(&18) as i32;
-            let factor  = 10f64.powi(dec) / 1e6;
-            let p_uni   = (u.usdt as f64) / (u.token as f64 / factor);
-            let p_su    = (s.usdt as f64) / (s.token as f64 / factor);
-            let spread  = ((p_su - p_uni).abs() / p_uni) * 10_000.0;
+            let dec   = *decimals.get(&sym).unwrap_or(&18) as i32;
+            let factor= 10f64.powi(dec) / 1e6;
+            let p_u   = (u.usdt as f64) / (u.token as f64 / factor);
+            let p_s   = (s.usdt as f64) / (s.token as f64 / factor);
+            let spread= ((p_s - p_u).abs() / p_u) * 10_000.0;
 
             if spread >= threshold_bps {
-                info!("⚡  {sym} spread {:.2} bps  uni={p_uni:.5} sushi={p_su:.5}", spread);
-                // TODO: fire_flashloan_bundle(client.clone(), flash_contract, ...)
+                info!("⚡  {sym:>6} spread {spread:.2} bps  uni={p_u:.5} sushi={p_s:.5}");
+                // TODO: craft calldata + Flashbots bundle -> fire
+                // fire_bundle(client.clone(), flash_contract, uni_router, sushi_router, addr_map[&sym], usdt, ...)
             }
         }
     }
     Ok(())
 }
 
-// ─── Listener – generic over any Middleware so we can pass client.clone()
-fn spawn_listener<M: Middleware + 'static>(
-    provider: Arc<M>,
+// ── Listener: Arc<Provider<Ws>> to satisfy PubsubClient bound
+fn spawn_listener(
+    provider: Arc<Provider<Ws>>,
     symbol:   String,
     pair:     Address,
     is_uni:   bool,
