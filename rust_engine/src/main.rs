@@ -1,71 +1,82 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
-use ethers::{prelude::*, contract::abigen};
-use ethers::providers::{Provider, Ws, StreamExt};
-use std::env;
-use tokio::time::{sleep, Duration};
-use anyhow::Result;
+// SPDX‑License‑Identifier: MIT
+//! Streaming price scanner *plus* flash‑loan trigger.
+//!
+//! • Still uses your existing Uniswap/Sushi reserve logic
+//! • When spread > THRESHOLD_BPS it calls `tx_executor::fire`
 
+use std::{env, sync::Arc};
+
+use anyhow::Result;
+use dotenv::dotenv;
+use ethers::{
+    contract::abigen,
+    prelude::*,
+    providers::{Provider, StreamExt, Ws},
+    types::Address,
+};
+use tokio::time::{sleep, Duration};
+
+mod tx_executor; // ← our new hot‑path module
+
+// ── ABI bindings (unchanged from your file)
 abigen!(
     UniswapV2Factory,
-    r#"[
-        function getPair(address tokenA, address tokenB) external view returns (address pair)
-    ]"#,
+    r#"[function getPair(address tokenA, address tokenB) external view returns (address)]"#,
 );
-
 abigen!(
     UniswapV2Pair,
-    r#"[
-        function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)
-        function token0()    external view returns (address)
-        function token1()    external view returns (address)
-    ]"#,
+    r#"[function getReserves() external view returns (uint112,uint112,uint32)
+       function token0() external view returns (address)
+       function token1() external view returns (address)]"#,
 );
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1) Load config
-    dotenv::dotenv().ok();
-    let ws_url            = env::var("ETH_WS_URL")?;
+    // ───────────────────────────────────────────────────────────
+    // 1. Load environment
+    dotenv().ok();
+    let ws_url            = env::var("ETH_WS_URL")?;          // WebSocket RPC
     let uni_factory_addr: Address    = env::var("UNISWAP_FACTORY")?.parse()?;
     let sushi_factory_addr: Address  = env::var("SUSHI_FACTORY")?.parse()?;
     let token0_addr: Address         = env::var("TOKEN_0")?.parse()?; // e.g. WETH
     let token1_addr: Address         = env::var("TOKEN_1")?.parse()?; // e.g. USDT
-    let threshold_bps: f64           = env::var("SPREAD_THRESHOLD_BPS")?.parse()?; // e.g. 50 = 0.50%
+    let threshold_bps: f64           = env::var("SPREAD_THRESHOLD_BPS")?.parse()?;
 
-    // 2) Connect WebSocket Provider
-    let ws       = Ws::connect(ws_url).await?;
+    //   Flash‑loan‑related addresses
+    let arb_contract: Address = env::var("FLASHLOAN_ARBITRAGE")?.parse()?;
+    let buy_router:  Address  = env::var("UNISWAP_ROUTER")?.parse()?;   // buy‑low
+    let sell_router: Address  = env::var("SUSHI_ROUTER")?.parse()?;     // sell‑high
+
+    // ───────────────────────────────────────────────────────────
+    // 2. Connect provider
+    let ws       = Ws::connect(&ws_url).await?;
     let provider = Arc::new(Provider::new(ws));
 
-    // 3) Instantiate factories & discover pair addresses
-    let uni_factory   = UniswapV2Factory::new(uni_factory_addr, Arc::clone(&provider));
-    let sushi_factory = UniswapV2Factory::new(sushi_factory_addr, Arc::clone(&provider));
-
-    let uniswap_pair_addr = uni_factory
+    // 3. Get pair addresses
+    let uni_pair_addr = UniswapV2Factory::new(uni_factory_addr, provider.clone())
         .get_pair(token0_addr, token1_addr)
         .call()
         .await?;
-    let sushi_pair_addr = sushi_factory
+    let sushi_pair_addr = UniswapV2Factory::new(sushi_factory_addr, provider.clone())
         .get_pair(token0_addr, token1_addr)
         .call()
         .await?;
 
-    println!("Uniswap V2 pair:  {uniswap_pair_addr}");
-    println!("SushiSwap V2 pair: {sushi_pair_addr}");
+    println!("Uniswap pair  : {uni_pair_addr}");
+    println!("SushiSwap pair: {sushi_pair_addr}");
 
-    // 4) Instantiate pair contracts
-    let uni_pair   = UniswapV2Pair::new(uniswap_pair_addr, Arc::clone(&provider));
-    let sushi_pair = UniswapV2Pair::new(sushi_pair_addr, Arc::clone(&provider));
+    let uni_pair   = UniswapV2Pair::new(uni_pair_addr, provider.clone());
+    let sushi_pair = UniswapV2Pair::new(sushi_pair_addr, provider.clone());
 
-    // 5) Subscribe to new block headers
-    let mut stream = provider.subscribe_blocks().await?;
-    println!("🚀 Scanner started. Listening for opportunities…");
+    // 4. Stream blocks
+    let mut blocks = provider.subscribe_blocks().await?;
+    println!("🚀  Scanner running …");
 
-    while let Some(block) = stream.next().await {
+    while let Some(block) = blocks.next().await {
         let bn = block.number.unwrap_or_default().as_u64();
 
-        // 6) Fetch reserves & token0 for both pairs concurrently
-        let ((u_reserves, uni_t0), (s_reserves, sushi_t0)) = tokio::try_join!(
+        // 5. Fetch reserves concurrently
+        let ((u_res, uni_t0), (s_res, sushi_t0)) = tokio::try_join!(
             async {
                 let res = uni_pair.get_reserves().call().await?;
                 let t0  = uni_pair.token_0().call().await?;
@@ -78,43 +89,36 @@ async fn main() -> Result<()> {
             }
         )?;
 
-        let (u0, u1, _) = u_reserves;
-        let (s0, s1, _) = s_reserves;
+        let (u0, u1, _) = u_res;
+        let (s0, s1, _) = s_res;
 
-        // 7) Map reserves to USDT vs WETH correctly
-        let (uni_usdt_res, uni_weth_res) = if uni_t0 == token1_addr {
-            (u0, u1)
-        } else {
-            (u1, u0)
-        };
-        let (sushi_usdt_res, sushi_weth_res) = if sushi_t0 == token1_addr {
-            (s0, s1)
-        } else {
-            (s1, s0)
-        };
+        // 6. Align reserves (USDT has 6 dec, WETH 18 dec)
+        let (uni_usdt, uni_weth)   = if uni_t0 == token1_addr { (u0, u1) } else { (u1, u0) };
+        let (sushi_usdt, sushi_weth) = if sushi_t0 == token1_addr { (s0, s1) } else { (s1, s0) };
 
-        // 8) Normalize reserves to human floats
-        //    USDT has 6 decimals, WETH has 18
-        let uni_usdt_f    = uni_usdt_res  as f64 / 1e6;
-        let uni_weth_f    = uni_weth_res  as f64 / 1e18;
-        let sushi_usdt_f  = sushi_usdt_res as f64 / 1e6;
-        let sushi_weth_f  = sushi_weth_res as f64 / 1e18;
+        let price_uni   = (uni_usdt as f64 / 1e6)  / (uni_weth as f64 / 1e18);
+        let price_sushi = (sushi_usdt as f64 / 1e6) / (sushi_weth as f64 / 1e18);
+        let spread_bps  = ((price_sushi - price_uni).abs() / price_uni) * 10_000.0;
 
-        // 9) Compute price (USDT per WETH)
-        let price_uni    = uni_usdt_f  / uni_weth_f;
-        let price_sushi  = sushi_usdt_f / sushi_weth_f;
-
-        // 10) Calculate spread in bps & alert
-        let spread_bps = ((price_sushi - price_uni).abs() / price_uni) * 10_000.0;
         if spread_bps > threshold_bps {
             println!(
-                "[Block {bn}] Arb detected!\n  • Uni:   {price_uni:.6}\n  • Sushi: {price_sushi:.6}\n  • Spread: {spread_bps:.2} bps\n"
+                "[Block {bn}] ⚡ Arb!  uni={price_uni:.6}  sushi={price_sushi:.6}  spread={spread_bps:.2} bps"
             );
+
+            // 7. Spawn flash‑loan executor (non‑blocking)
+            //    Convert to u32; cap to avoid f64‑>u32 overflow.
+            let _ = tokio::spawn(tx_executor::fire(
+                &ws_url,
+                arb_contract,
+                buy_router,
+                sell_router,
+                token1_addr,   // USDT
+                token0_addr,   // WETH/XAUT (same direction as encode_swap)
+                spread_bps.min(u32::MAX as f64) as u32,
+            ));
         }
 
-        // Throttle a bit to avoid spamming
-        sleep(Duration::from_millis(200)).await;
+        sleep(Duration::from_millis(200)).await; // throttle log spam
     }
-
     Ok(())
 }
