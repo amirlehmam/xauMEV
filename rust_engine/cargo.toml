@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ethers              = { version = "2.0", features = ["abigen","ws","eip712","multicall","flashbots"] }
+ethers              = { version = "2.0", features = ["abigen","ws","eip712","multicall"] }
+ethers-flashbots    = "0.1"                # ← NEW crate, no features needed
 tokio               = { version = "1.37", features = ["rt-multi-thread","macros"] }
 dotenv              = "0.15"
 anyhow              = "1.0"
