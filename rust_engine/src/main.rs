@@ -72,9 +72,9 @@ async fn main() -> Result<()> {
 
     // ── Gas‑escalated signing client
     let escalator = GeometricGasPrice::new(
-        1.125,                       // 12.5 % bump factor
-        U256::from(50_000_000_000u64), // 50 gwei start (base+tip)
-        Some(60u64),                 // re‑quote duration (secs)
+        1.125,                 // bump factor
+        60u64,                 // re‑quote every 60 s
+        Some(U256::from(50_000_000_000u64)), // 50 gwei price‑cap
     );
     let escalated = GasEscalatorMiddleware::new(base_prov, escalator, Frequency::PerBlock);
 
@@ -82,10 +82,8 @@ async fn main() -> Result<()> {
         .parse::<LocalWallet>()?
         .with_chain_id(1u64);
 
-    let client = Arc::new(
-        NonceManagerMiddleware::new(escalated, wallet.address())
-            .into_signer(wallet),
-    );
+    let signer_mw   = SignerMiddleware::new(escalated, wallet.clone());
+    let client      = Arc::new(NonceManagerMiddleware::new(signer_mw, wallet.address()));
 
     // ── Load token list
     let tokens: Vec<Token> =
