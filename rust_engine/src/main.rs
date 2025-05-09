@@ -82,7 +82,6 @@ async fn main() -> Result<()> {
         let (s0, s1, _) = s_reserves;
 
         // 7) Map reserves to USDT vs WETH correctly
-        // TOKEN_1 = USDT, TOKEN_0 = WETH
         let (uni_usdt_res, uni_weth_res) = if uni_t0 == token1_addr {
             (u0, u1)
         } else {
@@ -95,14 +94,15 @@ async fn main() -> Result<()> {
         };
 
         // 8) Normalize reserves to human floats
-        let uni_usdt_f   = uni_usdt_res.as_u128() as f64 / 1e6;  // USDT has 6 decimals
-        let uni_weth_f   = uni_weth_res.as_u128() as f64 / 1e18; // WETH has 18 decimals
-        let sushi_usdt_f = sushi_usdt_res.as_u128() as f64 / 1e6;
-        let sushi_weth_f = sushi_weth_res.as_u128() as f64 / 1e18;
+        //    USDT has 6 decimals, WETH has 18
+        let uni_usdt_f    = uni_usdt_res  as f64 / 1e6;
+        let uni_weth_f    = uni_weth_res  as f64 / 1e18;
+        let sushi_usdt_f  = sushi_usdt_res as f64 / 1e6;
+        let sushi_weth_f  = sushi_weth_res as f64 / 1e18;
 
         // 9) Compute price (USDT per WETH)
-        let price_uni   = uni_usdt_f / uni_weth_f;
-        let price_sushi = sushi_usdt_f / sushi_weth_f;
+        let price_uni    = uni_usdt_f  / uni_weth_f;
+        let price_sushi  = sushi_usdt_f / sushi_weth_f;
 
         // 10) Calculate spread in bps & alert
         let spread_bps = ((price_sushi - price_uni).abs() / price_uni) * 10_000.0;
@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
             );
         }
 
-        // Avoid spamming too fast
+        // Throttle a bit to avoid spamming
         sleep(Duration::from_millis(200)).await;
     }
 
