@@ -1,5 +1,3 @@
 [workspace]
-members = [
-    "rust_engine",
-    # "other_crate", ...
-]
+members  = ["rust_engine"]
+resolver = "2"      # edition‑2021 dependency resolver
