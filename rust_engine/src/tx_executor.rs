@@ -1,6 +1,6 @@
 // SPDX‑License‑Identifier: MIT
-//! Hot‑path flash‑loan sender for xauMEV.
-//! Called from `main.rs` whenever a price‑spread trigger is hit.
+// Hot‑path flash‑loan sender for xauMEV.
+// Called from `main.rs` whenever a price‑spread trigger is hit.
 
 use std::{env, sync::Arc, time::Duration};
 
@@ -23,7 +23,7 @@ use ethers::providers::Middleware;
 /// 1. Solidity flash‑loan contract ABI (only the entry we call)
 abigen!(
     FlashLoanArbitrage,
-    r#"function executeArbitrage(address buyRouter, bytes buyData, address sellRouter, bytes sellData, uint256 loanAmount, uint256 minProfit, uint256 maxDevBps) external"#,
+    r#"[function executeArbitrage(address buyRouter, bytes buyData, address sellRouter, bytes sellData, uint256 loanAmount, uint256 minProfit, uint256 maxDevBps)]"#,
 );
 
 /// ───────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ pub async fn fire(
 
     // ── Send flash‑loan tx
     let arb = FlashLoanArbitrage::new(arb_contract, client.clone());
-    let pending = arb
+    let sent = arb
         .execute_arbitrage(
             buy_router,
             buy_data,
@@ -132,10 +132,11 @@ pub async fn fire(
             min_profit,
             max_dev_bps,
         )
-        .gas(1_500_000u64)                   // upper‑bound; tune later
+        .gas(1_500_000u64)
         .send()
-        .await?
-        .interval(Duration::from_secs(3));
+        .await?;
+
+    let mut pending = sent.interval(Duration::from_secs(3));
 
     match pending.await? {
         Some(r) => println!(
