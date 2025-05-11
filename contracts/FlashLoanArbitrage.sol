@@ -101,12 +101,28 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         require(maxDevBps <= MAX_BPS, "dev>100%");
         require(baseToken != address(0) && targetToken != address(0), "zero token addr");
 
-        bytes memory p = abi.encode(
-            buyRouter, buyData,
-            sellRouter, sellData,
-            baseToken, targetToken,
-            minProfit, maxDevBps
-        );
+        struct ArbParams {
+            address buyRouter;
+            bytes buyData;
+            address sellRouter;
+            bytes sellData;
+            address baseToken;
+            address targetToken;
+            uint256 minProfit;
+            uint256 maxDevBps;
+        }
+
+        ArbParams memory arbParams = ArbParams({
+            buyRouter: buyRouter,
+            buyData: buyData,
+            sellRouter: sellRouter,
+            sellData: sellData,
+            baseToken: baseToken,
+            targetToken: targetToken,
+            minProfit: minProfit,
+            maxDevBps: maxDevBps
+        });
+        bytes memory p = abi.encode(arbParams);
         pool.flashLoanSimple(address(this), baseToken, loanAmount, p, REFERRAL_CODE);
     }
 
@@ -120,27 +136,28 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        (
-            address buyRouter,
-            bytes memory buyData,
-            address sellRouter,
-            bytes memory sellData,
-            address baseToken,
-            address targetToken,
-            uint256 minProfit,
-            uint256 maxDevBps
-        ) = abi.decode(params, (address, bytes, address, bytes, address, address, uint256, uint256));
+        struct ArbParams {
+            address buyRouter;
+            bytes buyData;
+            address sellRouter;
+            bytes sellData;
+            address baseToken;
+            address targetToken;
+            uint256 minProfit;
+            uint256 maxDevBps;
+        }
 
+        ArbParams memory arb = abi.decode(params, (ArbParams));
         require(
             msg.sender == address(pool) &&
             initiator  == address(this) &&
-            asset      == baseToken,
+            asset      == arb.baseToken,
             "unauth: sender or initiator or asset mismatch"
         );
 
         uint256 profit = 0;
-        IERC20 base = IERC20(baseToken);
-        IERC20 target = IERC20(targetToken);
+        IERC20 base = IERC20(arb.baseToken);
+        IERC20 target = IERC20(arb.targetToken);
 
         try priceFeed.latestRoundData() returns (uint80, int256 oracle, uint256, uint256, uint80) {
             require(oracle > 0, "oracle price <= 0");
@@ -148,8 +165,8 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
 
             uint256 balBefore = base.balanceOf(address(this));
 
-            base.forceApprove(buyRouter, amount);
-            (bool okBuy, bytes memory buyResult) = buyRouter.call(buyData);
+            base.forceApprove(arb.buyRouter, amount);
+            (bool okBuy, bytes memory buyResult) = arb.buyRouter.call(arb.buyData);
             if (!okBuy) {
                 string memory reason = _getRevertMsg(buyResult);
                 revert(string(abi.encodePacked("buy fail: ", reason)));
@@ -160,10 +177,10 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
 
             uint256 ammPrice6 = (amount * 1e6) / targetBal;
             uint256 deviation = _diffBps(ammPrice6, oraclePrice6);
-            require(deviation <= maxDevBps, string(abi.encodePacked("deviation too big: ", _uintToString(deviation), " > ", _uintToString(maxDevBps))));
+            require(deviation <= arb.maxDevBps, string(abi.encodePacked("deviation too big: ", _uintToString(deviation), " > ", _uintToString(arb.maxDevBps))));
 
-            target.forceApprove(sellRouter, targetBal);
-            (bool okSell, bytes memory sellResult) = sellRouter.call(sellData);
+            target.forceApprove(arb.sellRouter, targetBal);
+            (bool okSell, bytes memory sellResult) = arb.sellRouter.call(arb.sellData);
             if (!okSell) {
                 string memory reason = _getRevertMsg(sellResult);
                 revert(string(abi.encodePacked("sell fail: ", reason)));
@@ -173,7 +190,7 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
             if (balAfter > balBefore + premium) {
                 profit = balAfter - balBefore - premium;
             }
-            require(profit >= minProfit, string(abi.encodePacked("profit < min: ", _uintToString(profit), " < ", _uintToString(minProfit))));
+            require(profit >= arb.minProfit, string(abi.encodePacked("profit < min: ", _uintToString(profit), " < ", _uintToString(arb.minProfit))));
             if (profit > 0) base.safeTransfer(owner(), profit);
             base.forceApprove(address(pool), amount + premium);
         } catch Error(string memory reason) {
@@ -182,7 +199,7 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
             revert("oracle call failed");
         }
 
-        emit ArbitrageExecuted(profit, buyRouter, sellRouter, baseToken, targetToken);
+        emit ArbitrageExecuted(profit, arb.buyRouter, arb.sellRouter, arb.baseToken, arb.targetToken);
         return true;
     }
 
