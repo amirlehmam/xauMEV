@@ -58,40 +58,29 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
                             IMMUTABLES
     //////////////////////////////////////////////////////////////*/
     IPool   public immutable pool;
-    IERC20  public immutable USDT;    // 6 dec
-    IERC20  public immutable XAUT;    // 6 dec
-    AggregatorV3Interface public immutable priceFeed; // XAU/USD 8 dec
-
+    AggregatorV3Interface public immutable priceFeed;
     uint16  public constant REFERRAL_CODE = 0;
     uint256 private constant MAX_BPS      = 10_000;   // 100 %
 
     /*//////////////////////////////////////////////////////////////
                                EVENTS
     //////////////////////////////////////////////////////////////*/
-    event ArbitrageExecuted(uint256 profitUSDT, address buyRouter, address sellRouter);
+    event ArbitrageExecuted(uint256 profit, address buyRouter, address sellRouter, address baseToken, address targetToken);
 
     /*//////////////////////////////////////////////////////////////
                             CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
     constructor(
         address _pool,
-        address _usdt,
-        address _xaut,
         address _priceFeed
     ) {
         require(
             _pool != address(0) &&
-            _usdt != address(0) &&
-            _xaut != address(0) &&
             _priceFeed != address(0),
             "zero addr"
         );
         pool      = IPool(_pool);
-        USDT      = IERC20(_usdt);
-        XAUT      = IERC20(_xaut);
         priceFeed = AggregatorV3Interface(_priceFeed);
-
-        USDT.safeApprove(_pool, type(uint256).max);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -102,19 +91,23 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         bytes calldata buyData,
         address sellRouter,
         bytes calldata sellData,
+        address baseToken,   // e.g., USDT
+        address targetToken, // e.g., any from tokens.json
         uint256 loanAmount,
         uint256 minProfit,
         uint256 maxDevBps
     ) external onlyOwner nonReentrant {
         require(loanAmount > 0, "loan=0");
         require(maxDevBps <= MAX_BPS, "dev>100%");
+        require(baseToken != address(0) && targetToken != address(0), "zero token addr");
 
         bytes memory p = abi.encode(
             buyRouter, buyData,
             sellRouter, sellData,
-            minProfit,  maxDevBps
+            baseToken, targetToken,
+            minProfit, maxDevBps
         );
-        pool.flashLoanSimple(address(this), address(USDT), loanAmount, p, REFERRAL_CODE);
+        pool.flashLoanSimple(address(this), baseToken, loanAmount, p, REFERRAL_CODE);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -127,74 +120,69 @@ contract FlashLoanArbitrage is Ownable, ReentrancyGuard, IFlashLoanSimpleReceive
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
+        (
+            address buyRouter,
+            bytes memory buyData,
+            address sellRouter,
+            bytes memory sellData,
+            address baseToken,
+            address targetToken,
+            uint256 minProfit,
+            uint256 maxDevBps
+        ) = abi.decode(params, (address, bytes, address, bytes, address, address, uint256, uint256));
+
         require(
             msg.sender == address(pool) &&
             initiator  == address(this) &&
-            asset      == address(USDT),
+            asset      == baseToken,
             "unauth: sender or initiator or asset mismatch"
         );
 
-        (
-            address buyRouter,
-            bytes   memory buyData,
-            address sellRouter,
-            bytes   memory sellData,
-            uint256 minProfit,
-            uint256 maxDevBps
-        ) = abi.decode(params, (address, bytes, address, bytes, uint256, uint256));
-
         uint256 profit = 0;
+        IERC20 base = IERC20(baseToken);
+        IERC20 target = IERC20(targetToken);
 
-        /*───────── 1. Oracle price ─────────*/
         try priceFeed.latestRoundData() returns (uint80, int256 oracle, uint256, uint256, uint80) {
             require(oracle > 0, "oracle price <= 0");
             uint256 oraclePrice6 = uint256(oracle) * 1e6 / 1e8;
 
-            /*───────── 2. Balances avant swap ──*/
-            uint256 balBefore = USDT.balanceOf(address(this));
+            uint256 balBefore = base.balanceOf(address(this));
 
-            /*───────── 3. USDT → XAUT ──────────*/
-            USDT.forceApprove(buyRouter, amount);
+            base.forceApprove(buyRouter, amount);
             (bool okBuy, bytes memory buyResult) = buyRouter.call(buyData);
             if (!okBuy) {
                 string memory reason = _getRevertMsg(buyResult);
                 revert(string(abi.encodePacked("buy fail: ", reason)));
             }
 
-            uint256 xautBal = XAUT.balanceOf(address(this));
-            require(xautBal > 0, "no XAUT received after swap");
+            uint256 targetBal = target.balanceOf(address(this));
+            require(targetBal > 0, "no target received after swap");
 
-            /* Price deviation guard */
-            uint256 ammPrice6 = (amount * 1e6) / xautBal;
+            uint256 ammPrice6 = (amount * 1e6) / targetBal;
             uint256 deviation = _diffBps(ammPrice6, oraclePrice6);
             require(deviation <= maxDevBps, string(abi.encodePacked("deviation too big: ", _uintToString(deviation), " > ", _uintToString(maxDevBps))));
 
-            /*───────── 4. XAUT → USDT ──────────*/
-            XAUT.forceApprove(sellRouter, xautBal);
+            target.forceApprove(sellRouter, targetBal);
             (bool okSell, bytes memory sellResult) = sellRouter.call(sellData);
             if (!okSell) {
                 string memory reason = _getRevertMsg(sellResult);
                 revert(string(abi.encodePacked("sell fail: ", reason)));
             }
 
-            /*───────── 5. Profit ───────────────*/
-            uint256 balAfter = USDT.balanceOf(address(this));
+            uint256 balAfter = base.balanceOf(address(this));
             if (balAfter > balBefore + premium) {
                 profit = balAfter - balBefore - premium;
             }
             require(profit >= minProfit, string(abi.encodePacked("profit < min: ", _uintToString(profit), " < ", _uintToString(minProfit))));
-            
-            if (profit > 0) USDT.safeTransfer(owner(), profit);
-
-            /*───────── 6. Repayment ────────────*/
-            USDT.forceApprove(address(pool), amount + premium);
+            if (profit > 0) base.safeTransfer(owner(), profit);
+            base.forceApprove(address(pool), amount + premium);
         } catch Error(string memory reason) {
             revert(string(abi.encodePacked("oracle error: ", reason)));
         } catch (bytes memory) {
             revert("oracle call failed");
         }
 
-        emit ArbitrageExecuted(profit, buyRouter, sellRouter);
+        emit ArbitrageExecuted(profit, buyRouter, sellRouter, baseToken, targetToken);
         return true;
     }
 

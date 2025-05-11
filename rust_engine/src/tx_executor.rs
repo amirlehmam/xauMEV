@@ -122,7 +122,8 @@ pub async fn fire(
 
     // ── Send flash‑loan tx
     let arb = FlashLoanArbitrage::new(arb_contract, client.clone());
-    let sent = arb
+
+    let call = arb
         .execute_arbitrage(
             buy_router,
             buy_data,
@@ -132,11 +133,10 @@ pub async fn fire(
             min_profit,
             max_dev_bps,
         )
-        .gas(1_500_000u64)
-        .send()
-        .await?;
+        .gas(1_500_000u64);
 
-    let mut pending = sent.interval(Duration::from_secs(3));
+    let sent = call.send().await?;
+    let pending = sent.interval(Duration::from_secs(3));
 
     match pending.await? {
         Some(r) => println!(
